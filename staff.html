@@ -121,6 +121,47 @@ const functions = getFunctions(app, 'asia-east1');
 // 每個系統各自獨立：自己的活動、參加者資料。這個頁面只顯示網址指定的系統。
 const SYS=(new URLSearchParams(location.search).get('s')||'').trim().toLowerCase();
 const SYS_RE=/^[a-z0-9][a-z0-9-]{1,29}$/;
+// ── 系列（網址 &g=系列ID：只顯示這個系列的活動）──
+// 活動選單依系列分組顯示；系列不存在（例如已刪除）就不篩選，顯示全部活動。
+const SERIES_FILTER=(new URLSearchParams(location.search).get('g')||'').trim();
+let seriesMapP=null;
+function loadSeriesMap(){
+  if(!seriesMapP){
+    seriesMapP=getDocs(collection(db,'systems',SYS,'series')).then(snap=>{
+      const m={}; snap.docs.forEach(d=>{ m[d.id]={id:d.id,...d.data()}; }); return m;
+    }).catch(()=>({}));
+  }
+  return seriesMapP;
+}
+async function filterBySeries(list){
+  if(!SERIES_FILTER) return list;
+  const sm=await loadSeriesMap();
+  if(!sm[SERIES_FILTER]) return list;
+  return list.filter(ev=>ev.seriesId===SERIES_FILTER);
+}
+// 活動 <option>：有系列時依系列分組（系列依後台排序，同系列新的一期在前），沒系列的放「其他活動」
+async function eventOptionsHtml(list, selectedId, open, close){
+  open=open||'（'; close=close||'）';
+  const sm=await loadSeriesMap();
+  const opt=ev=>'<option value="'+esc(ev.id)+'"'+(selectedId&&ev.id===selectedId?' selected':'')+'>'+esc(ev.name+(ev.date?open+ev.date+close:''))+'</option>';
+  const buckets=new Map();
+  list.forEach(ev=>{ const k=(ev.seriesId&&sm[ev.seriesId])?ev.seriesId:''; if(!buckets.has(k))buckets.set(k,[]); buckets.get(k).push(ev); });
+  const keys=[...buckets.keys()].filter(k=>k);
+  if(!keys.length) return list.map(opt).join('');
+  const ord=s=>typeof s.sortOrder==='number'?s.sortOrder:1e9;
+  keys.sort((a,b)=>ord(sm[a])-ord(sm[b])||String(sm[a].name).localeCompare(String(sm[b].name),'zh-Hant'));
+  let html=keys.map(k=>'<optgroup label="'+esc(sm[k].name||'')+'">'
+    +buckets.get(k).slice().sort((a,b)=>(b.seriesNo||0)-(a.seriesNo||0)).map(opt).join('')+'</optgroup>').join('');
+  if(buckets.has('')) html+='<optgroup label="其他活動">'+buckets.get('').map(opt).join('')+'</optgroup>';
+  return html;
+}
+// 網址指定系列時，頁首副標題顯示系列名稱
+async function applySeriesHeader(role){
+  if(!SERIES_FILTER) return;
+  const sm=await loadSeriesMap();
+  const s=sm[SERIES_FILTER];
+  if(s) document.querySelector('.header .sub').textContent=s.name+' · '+role;
+}
 // 呼叫後端時自動帶上系統代碼
 function callFn(name){
   const fn=httpsCallable(functions,name);
@@ -260,9 +301,11 @@ function isStaffRegOpen(ev) {
   const now = Date.now();
   // 條件1：手動開關 ON → 一律可報名
   if (ev.staffRegistrationOpen) return true;
-  // 未手動開放：須在時間範圍內才能報名（未設定視為不限制）
+  // 未手動開放：須設定報名期間（開始、結束至少一個）且在期間內才能報名
+  // 沒有設定報名期間＝不開放報名；只設一端的話，另一端不限制
   const start = ev.staffRegistrationStartAt?.toDate?.()?.getTime() ?? null;
   const end   = ev.staffRegistrationEndAt?.toDate?.()?.getTime() ?? null;
+  if (start === null && end === null) return false;
   const afterStart = (start === null || now >= start);
   const beforeEnd  = (end   === null || now <= end);
   return afterStart && beforeEnd;
@@ -287,16 +330,13 @@ async function initSignupPage(){
   const content=document.getElementById('signupContent');
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
   const snap=await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
-  signupEvents=snap.docs.map(d=>({id:d.id,...d.data()})).filter(ev=>isStaffRegOpen(ev));
+  signupEvents=await filterBySeries(snap.docs.map(d=>({id:d.id,...d.data()})).filter(ev=>isStaffRegOpen(ev)));
   if(!signupEvents.length){content.innerHTML='<div class="card"><div class="loading-cell">目前沒有開放工作人員報名的活動</div></div>';return;}
   if(signupEvents.length===1){await selectSignupEvent(signupEvents[0].id);}
   else{
     let html='<div class="card"><div class="input-group"><label>選擇活動</label><select id="signupEventSelect" class="input" onchange="onSignupEventSelect()">';
     html+='<option value="">請選擇...</option>';
-    signupEvents.forEach(ev=>{
-      const selected=(lastSignupEventId&&ev.id===lastSignupEventId)?' selected':'';
-      html+='<option value="'+ev.id+'"'+selected+'>'+esc(ev.name)+(ev.date?'（'+esc(ev.date)+'）':'')+'</option>';
-    });
+    html+=await eventOptionsHtml(signupEvents,lastSignupEventId);
     html+='</select></div></div><div id="signupForm"></div>';
     content.innerHTML=html;
     if(lastSignupEventId&&signupEvents.find(e=>e.id===lastSignupEventId)){
@@ -476,7 +516,7 @@ async function initStatusPage(){
   const content=document.getElementById('statusContent');
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
   const snap=await getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc')));
-  allStatusEvents=snap.docs.map(d=>({id:d.id,...d.data()}));
+  allStatusEvents=await filterBySeries(snap.docs.map(d=>({id:d.id,...d.data()})));
   if(!allStatusEvents.length){
     content.innerHTML='<div class="card"><div class="loading-cell">目前沒有活動資料</div></div>';
     return;
@@ -487,10 +527,7 @@ async function initStatusPage(){
     let html='<div class="card"><div class="input-group"><label>選擇活動</label>'
       +'<select id="statusEventSelect" class="input" onchange="onStatusEventSelect()">'
       +'<option value="">請選擇...</option>';
-    allStatusEvents.forEach(ev=>{
-      const selected=(lastStatusEventId&&ev.id===lastStatusEventId)?' selected':'';
-      html+='<option value="'+ev.id+'"'+selected+'>'+esc(ev.name)+(ev.date?'（'+esc(ev.date)+'）':'')+'</option>';
-    });
+    html+=await eventOptionsHtml(allStatusEvents,lastStatusEventId);
     html+='</select></div></div><div id="statusForm"></div>';
     content.innerHTML=html;
     if(lastStatusEventId&&allStatusEvents.find(e=>e.id===lastStatusEventId)){
@@ -720,6 +757,7 @@ async function initSystem(){
       const name=snap.data().name||SYS;
       document.getElementById('sysName').textContent=name;
       document.title=name+'｜工作人員服務';
+      await applySeriesHeader('工作人員服務');
       return true;
     }
     showSysGate('<h3 style="margin-bottom:8px">找不到這個報名系統</h3><p style="color:var(--muted);font-size:.88rem">請確認報名網址是否正確。</p>');

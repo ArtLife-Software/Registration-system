@@ -138,7 +138,7 @@ async function checkInviteCode(g,input){
 }
 
 // ── 參加者流水號：用 config/runnerCounter 計數器 + transaction 配發 ──
-// （跟 runner.html 線上報名共用同一個計數器，取代「掃全表找最大值+1」，
+// （跟 member.html 線上報名共用同一個計數器，取代「掃全表找最大值+1」，
 //  管理員手動新增報名跟線上報名同時發生也不會撞號）
 async function reserveIdBlock(n){
   const counterRef=doc(db,'systems',SYS,'config','runnerCounter');
@@ -439,8 +439,8 @@ function enterSystem(sid){
   document.getElementById('sideSysName').textContent=SYS_NAME;
   document.getElementById('topSysName').textContent='📝 '+SYS_NAME;
   document.getElementById('sysLinksHint').innerHTML='本系統的報名網址：'
-    +'參加者 <a href="'+esc(sysLink('runner.html',sid))+'" target="_blank" style="color:var(--accent)">'+esc(sysLink('runner.html',sid))+'</a> '
-    +'<button class="btn btn-ghost btn-sm" onclick="copySysLink(\'runner.html\',\''+escJs(sid)+'\')">複製</button><br>'
+    +'參加者 <a href="'+esc(sysLink('member.html',sid))+'" target="_blank" style="color:var(--accent)">'+esc(sysLink('member.html',sid))+'</a> '
+    +'<button class="btn btn-ghost btn-sm" onclick="copySysLink(\'member.html\',\''+escJs(sid)+'\')">複製</button><br>'
     +'工作人員 <a href="'+esc(sysLink('staff.html',sid))+'" target="_blank" style="color:var(--accent)">'+esc(sysLink('staff.html',sid))+'</a> '
     +'<button class="btn btn-ghost btn-sm" onclick="copySysLink(\'staff.html\',\''+escJs(sid)+'\')">複製</button>';
   document.getElementById('appScreen').dataset.entered='1';
@@ -584,43 +584,386 @@ window.deleteRunner = async function(id, name) {
 // ════════════════════════════
 // 活動管理
 // ════════════════════════════
+// 報名狀態徽章：顯示「實際」是否開放（手動 ON／依報名期間），不只是手動開關
+// 規則同報名頁：手動 ON 一律開放；否則要有報名期間且在期間內（參加者另有名額上限，額滿時報名頁會停止）
+function regStatusBadge(label, manualOn, startTs, endTs){
+  if(manualOn) return '<span class="badge badge-green">'+label+' ON</span>';
+  const start=startTs?.toDate?.()?.getTime()??null, end=endTs?.toDate?.()?.getTime()??null;
+  if(start===null&&end===null) return '<span class="badge">'+label+' OFF</span>';
+  const now=Date.now();
+  const md=t=>{const d=new Date(t);return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');};
+  if(start!==null&&now<start) return '<span class="badge badge-wait" title="依報名期間">'+label+' '+md(start)+' 開始</span>';
+  if(end!==null&&now>end) return '<span class="badge" title="依報名期間">'+label+' 已截止</span>';
+  return '<span class="badge badge-green" title="依報名期間">'+label+' 開放中'+(end!==null?'（至 '+md(end)+'）':'')+'</span>';
+}
 async function loadEvents() {
-  const tbody = document.getElementById('eventsTableBody');
-  tbody.innerHTML = '<tr><td colspan="5" class="loading-cell">載入中...</td></tr>';
-  const snap = await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
-  if (snap.empty) { tbody.innerHTML='<tr><td colspan="5" class="loading-cell">無活動資料</td></tr>'; return; }
-  // 為每個活動讀取 groups 子集合
-  const rows = await Promise.all(snap.docs.map(async d => {
-    const ev=d.data();
+  const wrap = document.getElementById('eventsList');
+  wrap.innerHTML = '<div class="loading-cell">載入中...</div>';
+  const [snap] = await Promise.all([
+    getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc'))),
+    loadSeriesList()
+  ]);
+  const events = snap.docs.map(d=>({id:d.id,...d.data()}));
+  // 一列活動（狀態徽章與操作按鈕）
+  async function rowHtml(ev, withPeriod){
     const [gList,awardSnap]=await Promise.all([
-      getSortedGroupList(d.id),
-      getDoc(doc(db,'systems',SYS,'events',d.id,'settings','award')).catch(()=>null)
+      getSortedGroupList(ev.id),
+      getDoc(doc(db,'systems',SYS,'events',ev.id,'settings','award')).catch(()=>null)
     ]);
     // 沒設定過＝不開放下載
     const awardOpen=!!(awardSnap&&awardSnap.exists()&&awardSnap.data().open);
     const gNames=gList.map(g=>g.name).join('、')||'-';
     // 狀態徽章
-    let statusHtml=(ev.registrationOpen?'<span class="badge badge-green">參加者報名 ON</span>':'<span class="badge">參加者報名 OFF</span>');
-    statusHtml+=(ev.staffRegistrationOpen?' <span class="badge badge-green">工作人員報名 ON</span>':'');
+    let statusHtml=regStatusBadge('參加者報名',ev.registrationOpen,ev.registrationStartAt,ev.registrationEndAt);
+    const staffBadge=regStatusBadge('工作人員報名',ev.staffRegistrationOpen,ev.staffRegistrationStartAt,ev.staffRegistrationEndAt);
+    if(staffBadge.indexOf('badge-green')>=0||staffBadge.indexOf('badge-wait')>=0) statusHtml+=' '+staffBadge;
     statusHtml+=(awardOpen?' <span class="badge badge-green">獎狀下載 ON</span>':'');
     // 操作按鈕
     let btns='';
     // 參加者報名開關
-    btns+=(!ev.registrationOpen?'<button class="btn btn-sm btn-green" onclick="toggleRegistration(\''+d.id+'\',true)">開放參加者報名</button> ':'<button class="btn btn-sm btn-danger" onclick="toggleRegistration(\''+d.id+'\',false)">關閉參加者報名</button> ');
+    btns+=(!ev.registrationOpen?'<button class="btn btn-sm btn-green" onclick="toggleRegistration(\''+ev.id+'\',true)">開放參加者報名</button> ':'<button class="btn btn-sm btn-danger" onclick="toggleRegistration(\''+ev.id+'\',false)">關閉參加者報名</button> ');
     // 工作人員報名開關
-    btns+=(!ev.staffRegistrationOpen?'<button class="btn btn-sm btn-green" onclick="toggleStaffRegistration(\''+d.id+'\',true)">開放工作人員報名</button> ':'<button class="btn btn-sm btn-danger" onclick="toggleStaffRegistration(\''+d.id+'\',false)">關閉工作人員報名</button> ');
-    btns+='<button class="btn btn-sm btn-ghost" onclick="editEvent(\''+d.id+'\')">編輯</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="manageGroups(\''+d.id+'\',\''+escJs(ev.name)+'\')">組別</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+d.id+'\',\''+escJs(ev.name)+'\',\'runner\')">參加者表單</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+d.id+'\',\''+escJs(ev.name)+'\',\'staff\')">工作人員表單</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="openCertEditor(\''+d.id+'\')">獎狀</button>';
+    btns+=(!ev.staffRegistrationOpen?'<button class="btn btn-sm btn-green" onclick="toggleStaffRegistration(\''+ev.id+'\',true)">開放工作人員報名</button> ':'<button class="btn btn-sm btn-danger" onclick="toggleStaffRegistration(\''+ev.id+'\',false)">關閉工作人員報名</button> ');
+    btns+='<button class="btn btn-sm btn-ghost" onclick="editEvent(\''+ev.id+'\')">編輯</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="manageGroups(\''+ev.id+'\',\''+escJs(ev.name)+'\')">組別</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'runner\')">參加者表單</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'staff\')">工作人員表單</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="openCertEditor(\''+ev.id+'\')">獎狀</button>';
+    const pt=periodText(ev);
     return '<tr>'
+      +(withPeriod?'<td style="white-space:nowrap;color:var(--muted)">'+esc(pt||'-')+'</td>':'')
       +'<td><strong>'+esc(ev.name)+'</strong></td><td>'+esc(ev.date||'-')+'</td><td>'+esc(gNames)+'</td>'
       +'<td>'+statusHtml+'</td>'
       +'<td style="white-space:nowrap">'+btns+'</td></tr>';
+  }
+  const collapsed=getCollapsedSet();
+  const buckets=bucketEventsBySeries(events);
+  const blocks=await Promise.all(buckets.map(async (b,bi)=>{
+    if(!b.series&&!b.events.length&&SERIES.length) return '';
+    const isSeries=!!b.series;
+    const rows=(await Promise.all(b.events.map(ev=>rowHtml(ev,isSeries)))).join('');
+    const cols=isSeries?6:5;
+    const table='<div class="table-wrap"><table><thead><tr>'+(isSeries?'<th>'+esc(periodLabelOf(b.series))+'別</th>':'')
+      +'<th>活動名稱</th><th>日期</th><th>組別</th><th>狀態</th><th>操作</th></tr></thead><tbody>'
+      +(rows||'<tr><td colspan="'+cols+'" class="loading-cell">'+(isSeries?'這個系列還沒有活動，按「建立下一'+esc(periodLabelOf(b.series))+'」建立第一'+esc(periodLabelOf(b.series)):'無活動資料')+'</td></tr>')
+      +'</tbody></table></div>';
+    if(!SERIES.length) return table; // 沒有任何系列：維持原本的單一表格
+    const sid=isSeries?b.series.id:'__none';
+    const title=isSeries?esc(b.series.name):'未分系列';
+    const count='<span class="series-count">'+b.events.length+' 個活動</span>';
+    const note=isSeries&&b.series.note?'<span class="series-count">'+esc(b.series.note)+'</span>':'';
+    let tools='';
+    if(isSeries){
+      const id=escJs(b.series.id);
+      tools='<div class="series-tools">'
+        +'<button class="btn btn-sm btn-primary" onclick="showNextPeriod(\''+id+'\')">＋ 建立下一'+esc(periodLabelOf(b.series))+'</button> '
+        +'<button class="btn btn-sm btn-ghost" onclick="showEditSeries(\''+id+'\')">編輯系列</button> '
+        +'<button class="btn btn-sm btn-ghost" onclick="copySeriesLink(\''+id+'\')">複製系列報名網址</button> '
+        +'<button class="btn btn-sm btn-ghost" title="上移" onclick="moveSeries(\''+id+'\',-1)"'+(bi===0?' disabled':'')+'>↑</button> '
+        +'<button class="btn btn-sm btn-ghost" title="下移" onclick="moveSeries(\''+id+'\',1)"'+(bi===SERIES.length-1?' disabled':'')+'>↓</button>'
+        +'</div>';
+    }
+    return '<details class="series-block" data-sid="'+esc(sid)+'"'+(collapsed.has(sid)?'':' open')+' ontoggle="onSeriesToggle(this)">'
+      +'<summary><span class="series-title">'+(isSeries?'📚 ':'📄 ')+title+'</span>'+count+note+'</summary>'
+      +tools+table+'</details>';
   }));
-  tbody.innerHTML = rows.join('');
+  wrap.innerHTML = blocks.join('') || '<div class="loading-cell">無活動資料</div>';
 }
+// ════════════════════════════
+// 系列：把同一個系統裡的活動分組（例如「書法初階班」的第一期、第二期…）
+// ════════════════════════════
+// systems/{SYS}/series/{id}：{ name, note, sortOrder, periodLabel, nameTemplate, createdAt }
+//   periodLabel：期別稱呼（期、季、梯次、屆、年度…），介面上的「第 N 期」會跟著換
+//   nameTemplate：「建立下一期」自動命名的格式，可用 {系列} {N} {中N} {稱呼}
+// 活動文件多兩個欄位：seriesId（所屬系列，沒有＝未分系列）、seriesNo（第幾期，可空白）
+// 系列只是活動上的標籤：活動可以隨時加入、移出、換系列，不會動到報名資料。
+let SERIES=[]; // 目前系統的系列（已排序）
+const SERIES_DEFAULT_TEMPLATE='{系列} 第{N}{稱呼}';
+async function loadSeriesList(){
+  const snap=await getDocs(collection(db,'systems',SYS,'series'));
+  SERIES=snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>{
+    const ao=typeof a.sortOrder==='number'?a.sortOrder:1e9, bo=typeof b.sortOrder==='number'?b.sortOrder:1e9;
+    return ao-bo || String(a.name||'').localeCompare(String(b.name||''),'zh-Hant');
+  });
+  return SERIES;
+}
+function seriesById(id){ return SERIES.find(s=>s.id===id)||null; }
+function periodLabelOf(s){ return (s&&s.periodLabel)||'期'; }
+// 阿拉伯數字 → 中文數字（1～9999），給命名格式的 {中N} 用
+function toChineseNum(n){
+  n=parseInt(n,10); if(!(n>0)||n>9999) return String(n);
+  const d='零一二三四五六七八九', u=['','十','百','千'];
+  const s=String(n); let out='', zero=false;
+  for(let i=0;i<s.length;i++){
+    const v=+s[i], pos=s.length-1-i;
+    if(v===0){ zero=true; continue; }
+    if(zero&&out){ out+='零'; } zero=false;
+    out+=d[v]+u[pos];
+  }
+  return out.replace(/^一十/,'十');
+}
+function seriesPeriodName(s, n){
+  const tpl=(s&&s.nameTemplate)||SERIES_DEFAULT_TEMPLATE;
+  return tpl.replace(/\{系列\}/g,(s&&s.name)||'').replace(/\{中N\}/g,toChineseNum(n)).replace(/\{N\}/g,String(n)).replace(/\{稱呼\}/g,periodLabelOf(s)).trim();
+}
+function periodText(ev){
+  const s=seriesById(ev.seriesId);
+  return (s&&ev.seriesNo)?'第'+ev.seriesNo+periodLabelOf(s):'';
+}
+// 系列內的排序：期數大的（新的）在前；沒填期數的依建立時間
+function sortSeriesEvents(list){
+  return list.slice().sort((a,b)=>{
+    const an=a.seriesNo||0, bn=b.seriesNo||0;
+    if(an!==bn) return bn-an;
+    const at=a.createdAt?.toMillis?.()||0, bt=b.createdAt?.toMillis?.()||0;
+    return bt-at;
+  });
+}
+// 把活動依系列分組：回傳 [{series|null, events:[]}]，系列依排序，未分系列放最後
+function bucketEventsBySeries(events){
+  const buckets=SERIES.map(s=>({series:s, events:[]}));
+  const none={series:null, events:[]};
+  events.forEach(ev=>{
+    const b=buckets.find(x=>x.series.id===ev.seriesId);
+    (b||none).events.push(ev);
+  });
+  buckets.forEach(b=>{ b.events=sortSeriesEvents(b.events); });
+  return [...buckets, none];
+}
+// 後台各頁的活動下拉選單：依系列分組（<optgroup>）
+function eventOptionsHtml(events){
+  const label=ev=>esc((ev.name||'')+(ev.date?' ('+ev.date+')':''));
+  if(!SERIES.length) return events.map(ev=>'<option value="'+esc(ev.id)+'">'+label(ev)+'</option>').join('');
+  return bucketEventsBySeries(events).filter(b=>b.events.length).map(b=>
+    '<optgroup label="'+esc(b.series?b.series.name:'未分系列')+'">'
+    +b.events.map(ev=>'<option value="'+esc(ev.id)+'">'+label(ev)+'</option>').join('')+'</optgroup>'
+  ).join('');
+}
+function seriesLink(page, gid){ return sysLink(page,SYS)+'&g='+encodeURIComponent(gid); }
+window.copySeriesLink=async function(gid){
+  const url=seriesLink('member.html',gid);
+  try{ await navigator.clipboard.writeText(url); showToast('已複製這個系列的報名網址'); }
+  catch(e){ prompt('請手動複製報名網址：',url); }
+};
+// 系列區塊收合狀態（每個系統各自記住）
+function seriesCollapsedKey(){ return 'seriesCollapsed:'+SYS; }
+function getCollapsedSet(){ try{ return new Set(JSON.parse(localStorage.getItem(seriesCollapsedKey())||'[]')); }catch(e){ return new Set(); } }
+window.onSeriesToggle=function(el){
+  const set=getCollapsedSet(), id=el.dataset.sid;
+  if(el.open) set.delete(id); else set.add(id);
+  try{ localStorage.setItem(seriesCollapsedKey(),JSON.stringify([...set])); }catch(e){}
+};
+
+// ── 新增／編輯系列 ──
+function updateSeriesPreview(){
+  const s={name:document.getElementById('srName').value.trim()||'（系列名稱）',
+    periodLabel:document.getElementById('srPeriodLabel').value.trim()||'期',
+    nameTemplate:document.getElementById('srTemplate').value.trim()||SERIES_DEFAULT_TEMPLATE};
+  document.getElementById('srPreview').textContent='例：'+seriesPeriodName(s,1)+'、'+seriesPeriodName(s,2)+'、'+seriesPeriodName(s,12);
+}
+window.updateSeriesPreview=updateSeriesPreview;
+window.showAddSeries=function(){
+  document.getElementById('seriesModalTitle').textContent='新增系列';
+  document.getElementById('srEditing').value='';
+  document.getElementById('srName').value='';
+  document.getElementById('srNote').value='';
+  document.getElementById('srPeriodLabel').value='期';
+  document.getElementById('srTemplate').value=SERIES_DEFAULT_TEMPLATE;
+  document.getElementById('srDeleteBtn').style.display='none';
+  updateSeriesPreview();
+  document.getElementById('seriesModal').style.display='flex';
+};
+window.showEditSeries=function(id){
+  const s=seriesById(id); if(!s)return;
+  document.getElementById('seriesModalTitle').textContent='編輯系列';
+  document.getElementById('srEditing').value=id;
+  document.getElementById('srName').value=s.name||'';
+  document.getElementById('srNote').value=s.note||'';
+  document.getElementById('srPeriodLabel').value=periodLabelOf(s);
+  document.getElementById('srTemplate').value=s.nameTemplate||SERIES_DEFAULT_TEMPLATE;
+  document.getElementById('srDeleteBtn').style.display='';
+  updateSeriesPreview();
+  document.getElementById('seriesModal').style.display='flex';
+};
+window.saveSeries=async function(){
+  const id=document.getElementById('srEditing').value;
+  const name=document.getElementById('srName').value.trim();
+  const note=document.getElementById('srNote').value.trim();
+  const periodLabel=document.getElementById('srPeriodLabel').value.trim()||'期';
+  const nameTemplate=document.getElementById('srTemplate').value.trim()||SERIES_DEFAULT_TEMPLATE;
+  if(!name){showToast('請填寫系列名稱','error');return;}
+  if(SERIES.some(s=>s.id!==id&&s.name===name)){showToast('已經有同名的系列','error');return;}
+  if(!/\{N\}|\{中N\}/.test(nameTemplate)){showToast('命名格式要包含 {N} 或 {中N}，才能分出第幾'+periodLabel,'error');return;}
+  try{
+    if(id){
+      await updateDoc(doc(db,'systems',SYS,'series',id),{name,note,periodLabel,nameTemplate,updatedAt:serverTimestamp()});
+      showToast('已更新系列');
+    }else{
+      const maxOrder=SERIES.reduce((m,s)=>Math.max(m,typeof s.sortOrder==='number'?s.sortOrder:-1),-1);
+      await addDoc(collection(db,'systems',SYS,'series'),{name,note,periodLabel,nameTemplate,sortOrder:maxOrder+1,createdAt:serverTimestamp()});
+      showToast('已新增系列');
+    }
+    closeModal('seriesModal'); loadEvents();
+  }catch(e){ showToast('儲存失敗：'+e.message,'error'); }
+};
+// 刪除系列：底下的活動移到「未分系列」，活動本身與報名資料都不會刪除
+window.deleteSeries=async function(){
+  const id=document.getElementById('srEditing').value; const s=seriesById(id); if(!s)return;
+  try{
+    const evSnap=await getDocs(query(collection(db,'systems',SYS,'events'),where('seriesId','==',id)));
+    if(!confirm('確定刪除系列「'+s.name+'」？'+(evSnap.size?'\n\n底下 '+evSnap.size+' 個活動會移到「未分系列」，活動與報名資料都不會刪除。':'')))return;
+    const batch=writeBatch(db);
+    evSnap.docs.forEach(d=>batch.update(d.ref,{seriesId:deleteField(),seriesNo:deleteField(),updatedAt:serverTimestamp()}));
+    batch.delete(doc(db,'systems',SYS,'series',id));
+    await batch.commit();
+    showToast('已刪除系列');
+    closeModal('seriesModal'); loadEvents();
+  }catch(e){ showToast('刪除失敗：'+e.message,'error'); }
+};
+window.moveSeries=async function(id,dir){
+  const list=SERIES.slice();
+  const i=list.findIndex(s=>s.id===id), j=i+dir;
+  if(i<0||j<0||j>=list.length)return;
+  [list[i],list[j]]=[list[j],list[i]];
+  const batch=writeBatch(db);
+  list.forEach((s,k)=>{ if(s.sortOrder!==k) batch.update(doc(db,'systems',SYS,'series',s.id),{sortOrder:k}); });
+  await batch.commit();
+  loadEvents();
+};
+
+// ── 活動設定裡的「所屬系列」「第幾期」──
+function fillEventSeriesFields(ev){
+  const sel=document.getElementById('evSeries');
+  sel.innerHTML='<option value="">未分系列</option>'+SERIES.map(s=>'<option value="'+esc(s.id)+'">'+esc(s.name)+'</option>').join('');
+  sel.value=(ev&&ev.seriesId&&seriesById(ev.seriesId))?ev.seriesId:'';
+  document.getElementById('evSeriesNo').value=(ev&&ev.seriesNo)||'';
+  onEvSeriesChange(true);
+}
+// 選了系列、還沒填期數：自動帶入「目前最大期數 + 1」（可修改）
+window.onEvSeriesChange=async function(keepNo){
+  const sid=document.getElementById('evSeries').value;
+  const row=document.getElementById('evSeriesNoRow');
+  row.style.display=sid?'':'none';
+  const s=seriesById(sid);
+  document.getElementById('evSeriesNoLabel').textContent='第幾'+periodLabelOf(s);
+  const noEl=document.getElementById('evSeriesNo');
+  if(!sid){ noEl.value=''; return; }
+  if(keepNo===true||noEl.value) return;
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),where('seriesId','==',sid)));
+  const editing=document.getElementById('eventDocId').value;
+  const max=snap.docs.filter(d=>d.id!==editing).reduce((m,d)=>Math.max(m,d.data().seriesNo||0),0);
+  noEl.value=max+1;
+};
+function readEventSeriesFields(){
+  const sid=document.getElementById('evSeries').value;
+  const noRaw=document.getElementById('evSeriesNo').value.trim();
+  const no=parseInt(noRaw,10);
+  if(sid&&noRaw!==''&&!(no>0)) return {error:'第幾期必須是 1 以上的整數，或留空'};
+  return sid ? {seriesId:sid, seriesNo:(no>0?no:deleteField())} : {seriesId:deleteField(), seriesNo:deleteField()};
+}
+
+// ── 建立下一期 ──
+// 從同系列的某一期（預設最新一期）複製設定，建立新的一期。不複製報名資料與日期，報名開關預設關閉。
+const NEXT_COPY_ITEMS=[
+  {key:'groups',  label:'組別（含限制、名額、邀請碼、組別號碼規則）'},
+  {key:'runnerForm', label:'參加者表單（自訂欄位、標準欄位設定）'},
+  {key:'staffForm', label:'工作人員表單（自訂欄位、標準欄位設定）'},
+  {key:'capacity', label:'名額與號碼規則（報名上限、人數顯示、編號位數與範圍、自選與改號）'},
+  {key:'banner', label:'宣傳圖片與連結（參加者、工作人員）'},
+  {key:'award', label:'獎狀版面與底圖（不含頒發名單，也不會開放下載）'},
+];
+let nextState=null;
+window.showNextPeriod=async function(sid){
+  const s=seriesById(sid); if(!s)return;
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),where('seriesId','==',sid)));
+  const evs=sortSeriesEvents(snap.docs.map(d=>({id:d.id,...d.data()})));
+  const maxNo=evs.reduce((m,e)=>Math.max(m,e.seriesNo||0),0);
+  nextState={sid, s, evs, nameEdited:false};
+  document.getElementById('npTitle').textContent='建立下一'+periodLabelOf(s)+' — '+s.name;
+  const src=document.getElementById('npSource');
+  src.innerHTML=evs.length?evs.map(e=>'<option value="'+esc(e.id)+'">'+esc((periodText(e)?periodText(e)+'　':'')+e.name)+'</option>').join(''):'<option value="">（這個系列還沒有活動，建立空白的一'+esc(periodLabelOf(s))+'）</option>';
+  src.disabled=!evs.length;
+  document.getElementById('npNoLabel').textContent='第幾'+periodLabelOf(s);
+  document.getElementById('npNo').value=maxNo+1;
+  document.getElementById('npName').value=seriesPeriodName(s,maxNo+1);
+  document.getElementById('npDate').value='';
+  document.getElementById('npItems').innerHTML=NEXT_COPY_ITEMS.map(it=>
+    '<label style="display:flex;align-items:flex-start;gap:8px;font-size:.84rem;margin-bottom:6px;cursor:pointer"><input type="checkbox" class="npItem" data-key="'+it.key+'" checked style="margin-top:3px"'+(evs.length?'':' disabled')+'> <span>'+esc(it.label)+'</span></label>'
+  ).join('');
+  document.getElementById('npItemsBlock').style.display=evs.length?'':'none';
+  document.getElementById('nextPeriodModal').style.display='flex';
+};
+// 改期數時重新帶出名稱；使用者自己改過名稱就不覆蓋
+window.onNpNoChange=function(){
+  if(!nextState||nextState.nameEdited)return;
+  const n=parseInt(document.getElementById('npNo').value,10);
+  if(n>0) document.getElementById('npName').value=seriesPeriodName(nextState.s,n);
+};
+window.onNpNameInput=function(){ if(nextState) nextState.nameEdited=true; };
+window.createNextPeriod=async function(){
+  const st=nextState; if(!st)return;
+  const name=document.getElementById('npName').value.trim();
+  const no=parseInt(document.getElementById('npNo').value,10);
+  const date=document.getElementById('npDate').value;
+  if(!name){showToast('請填寫活動名稱','error');return;}
+  if(!(no>0)){showToast('第幾'+periodLabelOf(st.s)+'必須是 1 以上的整數','error');return;}
+  if(st.evs.some(e=>e.seriesNo===no)&&!confirm('這個系列已經有第'+no+periodLabelOf(st.s)+'，確定還要建立？'))return;
+  const items=new Set([...document.querySelectorAll('.npItem:checked')].map(el=>el.dataset.key));
+  const srcId=document.getElementById('npSource').value;
+  const btn=document.getElementById('npCreateBtn'); btn.disabled=true; btn.textContent='建立中...';
+  try{
+    const src=srcId?(await getDoc(doc(db,'systems',SYS,'events',srcId))).data()||{}:{};
+    const pick=(keys)=>{ const o={}; keys.forEach(k=>{ if(src[k]!==undefined) o[k]=src[k]; }); return o; };
+    const data={ name, date, organizer:src.organizer||'', seriesId:st.sid, seriesNo:no,
+      registrationOpen:false, staffRegistrationOpen:false, groupNames:[],
+      createdAt:serverTimestamp(), updatedAt:serverTimestamp(), copiedFrom:srcId||'' };
+    if(items.has('capacity')) Object.assign(data, pick(['registrationCapacity','showCapacity','entryCountDisplay','entryCountThreshold',
+      'bibPadLength','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax']));
+    if(items.has('banner')) Object.assign(data, pick(['bannerUrl','bannerLinkText','bannerLinkUrl','staffBannerUrl','staffBannerLinkText','staffBannerLinkUrl']));
+    if(items.has('staffForm')) Object.assign(data, pick(['staffCustomFields','staffFieldSettings']));
+    if(items.has('runnerForm')) Object.assign(data, pick(['fieldSettings']));
+    const newRef=await addDoc(collection(db,'systems',SYS,'events'),data);
+    // 組別：新的一期有新的組別 ID，自訂欄位的「適用組別」要跟著換成新 ID
+    const idMap={};
+    if(items.has('groups')&&srcId){
+      const gList=await getSortedGroupList(srcId);
+      const batch=writeBatch(db);
+      gList.forEach((g,i)=>{
+        const {id:oldId, createdAt, updatedAt, ...rest}=g;
+        const gRef=doc(collection(db,'systems',SYS,'events',newRef.id,'groups'));
+        idMap[oldId]=gRef.id;
+        batch.set(gRef,{...rest, sortOrder:i, createdAt:serverTimestamp(), updatedAt:serverTimestamp()});
+      });
+      batch.update(newRef,{groupNames:gList.map(g=>g.name)});
+      await batch.commit();
+    }
+    if(items.has('runnerForm')&&Array.isArray(src.customFields)){
+      // 沒有一起複製組別的話，舊的「適用組別」對不上新組別，改成適用全部組別
+      const fields=src.customFields.map(f=>{
+        const nf={...f};
+        if(Array.isArray(f.groups)&&f.groups.length){
+          const mapped=f.groups.map(g=>idMap[g]).filter(Boolean);
+          if(mapped.length) nf.groups=mapped; else delete nf.groups;
+        }
+        return nf;
+      });
+      await updateDoc(newRef,{customFields:fields});
+    }
+    if(items.has('award')&&srcId){
+      const [aw,bg]=await Promise.all([
+        getDoc(doc(db,'systems',SYS,'events',srcId,'settings','award')),
+        getDoc(doc(db,'systems',SYS,'events',srcId,'settings','awardBg'))
+      ]);
+      if(aw.exists()&&aw.data().template) await setDoc(doc(db,'systems',SYS,'events',newRef.id,'settings','award'),{open:false,template:aw.data().template,updatedAt:serverTimestamp()});
+      if(bg.exists()) await setDoc(doc(db,'systems',SYS,'events',newRef.id,'settings','awardBg'),{...bg.data(),updatedAt:serverTimestamp()});
+    }
+    showToast('已建立「'+name+'」，目前不開放報名；確認設定後再設定報名期間或手動開放');
+    closeModal('nextPeriodModal'); nextState=null;
+    loadEvents();
+  }catch(e){ showToast('建立失敗：'+e.message,'error'); }
+  finally{ btn.disabled=false; btn.textContent='建立'; }
+};
+
 window.toggleRegistration = async function(id,open){
   await updateDoc(doc(db,'systems',SYS,'events',id),{registrationOpen:open,updatedAt:serverTimestamp()});
   showToast(open?'已開放參加者報名':'已關閉參加者報名');
@@ -635,7 +978,8 @@ window.onEvEntryCountDisplayChange=function(){
   const mode=document.getElementById('evEntryCountDisplay').value;
   document.getElementById('evEntryCountThresholdRow').style.display=mode==='threshold'?'':'none';
 }
-window.showAddEvent = function() {
+window.showAddEvent = async function() {
+  if(!SERIES.length) await loadSeriesList();
   document.getElementById('eventModalTitle').textContent='新增活動';
   document.getElementById('eventForm').reset();
   document.getElementById('eventDocId').value='';
@@ -653,9 +997,11 @@ window.showAddEvent = function() {
   document.getElementById('evBibRangeMax').value='';
   document.getElementById('evCustomBibRangeMin').value='';
   document.getElementById('evCustomBibRangeMax').value='';
+  fillEventSeriesFields(null);
   document.getElementById('eventModal').style.display='flex';
 }
 window.editEvent = async function(id) {
+  if(!SERIES.length) await loadSeriesList();
   const snap = await getDoc(doc(db,'systems',SYS,'events',id)); if (!snap.exists()) return;
   const ev = snap.data();
   document.getElementById('eventModalTitle').textContent='編輯活動';
@@ -680,6 +1026,7 @@ window.editEvent = async function(id) {
   document.getElementById('evBibRangeMax').value=ev.bibRangeMax||'';
   document.getElementById('evCustomBibRangeMin').value=ev.customBibRangeMin||'';
   document.getElementById('evCustomBibRangeMax').value=ev.customBibRangeMax||'';
+  fillEventSeriesFields(ev);
   document.getElementById('eventModal').style.display='flex';
 }
 // 輔助：把 Timestamp 拆填入 日期文字框（yyyy/mm/dd）+ 時間欄位（type=time）
@@ -773,7 +1120,10 @@ window.saveEvent = async function() {
   if(customBibRangeMin>bibPadMax){
     showToast('自選號碼最小值（'+customBibRangeMin+'）超出「參加者編號位數」可表示的範圍（'+bibPadLength+'位最大到 '+bibPadMax+'），請調高位數或調低最小值','error'); return;
   }
+  const seriesFields=readEventSeriesFields();
+  if(seriesFields.error){ showToast(seriesFields.error,'error'); return; }
   const data = {
+    ...seriesFields,
     name:document.getElementById('evName').value.trim(),
     date:document.getElementById('evDate').value,
     organizer:document.getElementById('evOrganizer').value.trim(),
@@ -792,6 +1142,9 @@ window.saveEvent = async function() {
   if (id) { await updateDoc(doc(db,'systems',SYS,'events',id),data); showToast('已更新'); }
   else {
     data.createdAt=serverTimestamp(); data.groupNames=[];
+    // 新增時沒有選系列：不要寫入 deleteField()（addDoc 不接受）
+    if(!data.seriesId||typeof data.seriesId!=='string'){ delete data.seriesId; delete data.seriesNo; }
+    else if(typeof data.seriesNo!=='number') delete data.seriesNo;
     await addDoc(collection(db,'systems',SYS,'events'),data);
     showToast('已新增');
   }
@@ -1203,7 +1556,7 @@ let curBibPadLength=3; // 由活動設定 bibPadLength 決定，預設3位
 let curBibRange={min:0,max:0}; // 0=不限制（「號碼範圍」，自動配號優先池）
 let curCustomBibRange={min:0,max:0}; // 0=不限制（「自訂號碼範圍」，參加者自選/自動配號的第一優先池）
 // 號碼有效範圍：最小值/最大值各自獨立判斷，沒填的用「位數」推算出的預設（最小1，最大例如3位＝999），
-// 跟 runner.html／Cloud Function 用同一套邏輯
+// 跟 member.html／Cloud Function 用同一套邏輯
 function bibEffRange(rMin,rMax,pad){
   return {min:rMin>0?rMin:1, max:rMax>0?rMax:(Math.pow(10,pad)-1)};
 }
@@ -2241,7 +2594,7 @@ window.saveEntry=async function(){
   }
 }
 
-// ── 新增參加者後的報名資訊（與參加者端 runner.html 的「報名成功」畫面一致）──
+// ── 新增參加者後的報名資訊（與參加者端 member.html 的「報名成功」畫面一致）──
 let lastEntryResultInfo=null;
 function adminUtf16to8(str){
   let out='';
@@ -2404,15 +2757,12 @@ window.rejectCancelRequest=async function(id){
 // ── 共用：把活動清單填進下拉選單，並還原上次選的活動 ──
 async function loadEventSelect(selectId, cb) {
   const select=document.getElementById(selectId); if(!select)return;
-  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc')));
-  select.innerHTML='<option value="">請選擇活動...</option>';
-  snap.docs.forEach(d=>{
-    const ev=d.data(); const o=document.createElement('option');
-    o.value=d.id; o.textContent=ev.name+(ev.date?' ('+ev.date+')':'');
-    select.appendChild(o);
-  });
+  const [snap]=await Promise.all([getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc'))), loadSeriesList()]);
+  const events=snap.docs.map(d=>({id:d.id,...d.data()}));
+  // 依系列分組顯示
+  select.innerHTML='<option value="">請選擇活動...</option>'+eventOptionsHtml(events);
   const saved=localStorage.getItem(lastEventKey());
-  if(saved&&snap.docs.find(d=>d.id===saved))select.value=saved;
+  if(saved&&events.find(e=>e.id===saved))select.value=saved;
   await cb(select.value);
 }
 
@@ -2691,7 +3041,7 @@ function renderHubSystems(){
       +'<td class="sys-code">'+esc(x.id)+'</td>';
     if(IS_SUPER) html+='<td><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem"><input type="checkbox"'+(x.listed?' checked':'')+' onchange="toggleSystemListed(\''+id+'\',this)"> 列出</label></td>';
     html+='<td style="white-space:nowrap">'
-      +'<button class="btn btn-sm btn-ghost" onclick="copySysLink(\'runner.html\',\''+id+'\')">參加者網址</button> '
+      +'<button class="btn btn-sm btn-ghost" onclick="copySysLink(\'member.html\',\''+id+'\')">參加者網址</button> '
       +'<button class="btn btn-sm btn-ghost" onclick="copySysLink(\'staff.html\',\''+id+'\')">工作人員網址</button></td>';
     html+='<td style="white-space:nowrap"><button class="btn btn-sm btn-primary" onclick="enterSystem(\''+id+'\')">進入</button>';
     if(IS_SUPER) html+=' <button class="btn btn-sm btn-ghost" onclick="showEditSystem(\''+id+'\')">編輯</button>'
@@ -3396,7 +3746,7 @@ function groupDistText(d, unit) {
 // 獎狀 = 底圖 + 多個文字方塊。直接畫在 <canvas> 上（不用截圖套件），
 // 所以後台預覽、匯出的 PNG／PDF、參加者下載的 PNG 版面完全一樣。
 // 位置、寬度用「百分比」，字體大小用「佔底圖寬度的百分比」，換底圖或縮放都不會跑版。
-// ⚠️ admin.html 與 runner.html 各放一份，內容必須一致；改一邊就要同步改另一邊。
+// ⚠️ admin.html 與 member.html 各放一份，內容必須一致；改一邊就要同步改另一邊。
 // ═══════════════════════════════════════════════════════════════
 
 // 可用字型（Google Fonts 上的開源字型，SIL OFL 授權，可免費商用、嵌入網頁）
@@ -4464,6 +4814,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 #appScreen{display:none;min-height:100vh;}
 /* 總後台（選擇系統、管理系統與總管理員） */
 #hubScreen{display:none;min-height:100vh;padding:32px 16px 60px;}
+.badge-wait{background:rgba(234,179,8,.12);color:#eab308;border-color:rgba(234,179,8,.35);}
+/* 活動管理：依系列分區 */
+.series-block{border:1px solid var(--border);border-radius:12px;margin-bottom:16px;background:var(--surface);}
+.series-block>summary{cursor:pointer;padding:14px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;list-style:none;}
+.series-block>summary::-webkit-details-marker{display:none;}
+.series-block>summary::before{content:'▸';color:var(--muted);transition:transform .15s;}
+.series-block[open]>summary::before{transform:rotate(90deg);}
+.series-title{font-weight:800;font-size:.98rem;}
+.series-count{font-size:.75rem;color:var(--muted);}
+.series-tools{display:flex;gap:6px;flex-wrap:wrap;padding:0 16px 12px;}
+.series-block .table-wrap{margin:0 12px 12px;}
 .hub-wrap{max-width:1000px;margin:0 auto;}
 .hub-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:28px;}
 .hub-head .hub-title{font-size:1.3rem;font-weight:900;}
@@ -4613,7 +4974,7 @@ th[data-sort]:hover{color:var(--accent);}
     <div class="input-group"><label>密碼</label><input id="loginPassword" type="password" class="input" placeholder="••••••••"></div>
     <button id="loginBtn" class="btn btn-primary btn-full" onclick="doLogin()">登入</button>
     <div style="text-align:center;margin-top:20px">
-      <a href="runner.html" style="font-size:.82rem;color:var(--muted);text-decoration:none;display:inline-flex;align-items:center;gap:4px;transition:color .15s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">🔍 參加者服務（報名／查詢報名紀錄） →</a>
+      <a href="member.html" style="font-size:.82rem;color:var(--muted);text-decoration:none;display:inline-flex;align-items:center;gap:4px;transition:color .15s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'">🔍 參加者服務（報名／查詢報名紀錄） →</a>
     </div>
   </div>
 </div>
@@ -4643,7 +5004,7 @@ th[data-sort]:hover{color:var(--accent);}
 
     <div class="hub-block super-only">
       <div class="hub-block-title"><span>報名首頁設定</span></div>
-      <div class="csv-hint">報名首頁＝沒帶系統代碼的報名網址（例如只輸入 runner.html）。</div>
+      <div class="csv-hint">報名首頁＝沒帶系統代碼的報名網址（例如只輸入 member.html）。</div>
       <label style="display:flex;align-items:center;gap:8px;font-size:.88rem;cursor:pointer">
         <input type="checkbox" id="hubShowSystemList" onchange="saveShowSystemList(this)">
         列出系統讓人選擇（只列出上方勾選「列出」的系統）
@@ -4753,10 +5114,13 @@ th[data-sort]:hover{color:var(--accent);}
     <div id="sec-events" class="section active">
       <div class="section-header">
         <div class="section-title">活動管理</div>
-        <button class="btn btn-primary" onclick="showAddEvent()">＋ 新增活動</button>
+        <div class="section-actions">
+          <button class="btn btn-ghost" onclick="showAddSeries()">＋ 新增系列</button>
+          <button class="btn btn-primary" onclick="showAddEvent()">＋ 新增活動</button>
+        </div>
       </div>
       <div class="csv-hint" id="sysLinksHint"></div>
-      <div class="table-wrap"><table><thead><tr><th>活動名稱</th><th>日期</th><th>組別</th><th>狀態</th><th>操作</th></tr></thead><tbody id="eventsTableBody"><tr><td colspan="5" class="loading-cell">載入中...</td></tr></tbody></table></div>
+      <div id="eventsList"><div class="loading-cell">載入中...</div></div>
     </div>
 
     <!-- 報名管理 -->
@@ -4890,13 +5254,18 @@ th[data-sort]:hover{color:var(--accent);}
     <div class="modal-title" id="eventModalTitle">新增活動</div>
     <form id="eventForm">
       <input type="hidden" id="eventDocId">
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+        <div class="input-group" style="margin:0"><label>所屬系列</label><select id="evSeries" class="input" onchange="onEvSeriesChange()"><option value="">未分系列</option></select></div>
+        <div class="input-group" style="margin:0" id="evSeriesNoRow"><label id="evSeriesNoLabel">第幾期</label><input id="evSeriesNo" type="number" min="1" class="input" placeholder="可留空"></div>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin:6px 0 14px">系列用來把同一班的各期活動放在一起。可以隨時加入、移出或換系列，不影響報名資料。</div>
       <div class="input-group"><label>活動名稱 <span class="required-star">*</span></label><input id="evName" type="text" class="input" placeholder="例：2026 春季健行活動"></div>
       <div class="input-group"><label>活動日期</label><input id="evDate" type="date" class="input"></div>
       <div class="input-group"><label>主辦單位</label><input id="evOrganizer" type="text" class="input" placeholder="例：○○協會"></div>
       <!-- 參加者報名時間設定 -->
       <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
         <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">🎫 參加者報名時間設定</div>
-        <div class="csv-hint" style="margin-bottom:12px">以下任一條件符合即開放報名：手動開關 ON、在日期時間範圍內、未超過人數上限。若均未符合則關閉報名。</div>
+        <div class="csv-hint" style="margin-bottom:12px">手動開關「開放參加者報名」ON 時一律開放。<br>手動開關 OFF 時，要設定報名期間（開始、結束至少填一個）才會開放：在期間內、而且未超過人數上限。<strong>沒有設定報名期間＝不開放報名。</strong></div>
         <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
           <div class="input-group" style="margin:0"><label>報名開始日期（yyyy/mm/dd）</label>
             <div class="input-row">
@@ -4932,7 +5301,7 @@ th[data-sort]:hover{color:var(--accent);}
       <!-- 工作人員報名時間設定 -->
       <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
         <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">🦺 工作人員報名時間設定</div>
-        <div class="csv-hint" style="margin-bottom:12px">以下任一條件符合即開放報名：手動開關 ON、在日期時間範圍內。若均未符合則關閉報名。</div>
+        <div class="csv-hint" style="margin-bottom:12px">手動開關「開放工作人員報名」ON 時一律開放。<br>手動開關 OFF 時，要設定報名期間（開始、結束至少填一個），在期間內才會開放。<strong>沒有設定報名期間＝不開放報名。</strong></div>
         <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
           <div class="input-group" style="margin:0"><label>報名開始日期（yyyy/mm/dd）</label>
             <div class="input-row">
@@ -5400,6 +5769,49 @@ th[data-sort]:hover{color:var(--accent);}
   </div>
 </div>
 
+<!-- 系列 Modal（新增／編輯系列） -->
+<div id="seriesModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-title" id="seriesModalTitle">新增系列</div>
+    <input type="hidden" id="srEditing">
+    <div class="input-group"><label>系列名稱 <span class="required-star">*</span></label><input id="srName" type="text" class="input" placeholder="例：書法初階班" oninput="updateSeriesPreview()"></div>
+    <div class="input-group"><label>備註</label><input id="srNote" type="text" class="input" placeholder="只有管理員看得到"></div>
+    <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px">
+      <div class="input-group" style="margin:0"><label>期別稱呼</label><input id="srPeriodLabel" type="text" class="input" placeholder="期" oninput="updateSeriesPreview()"></div>
+      <div class="input-group" style="margin:0"><label>「建立下一期」的命名格式</label><input id="srTemplate" type="text" class="input" oninput="updateSeriesPreview()"></div>
+    </div>
+    <div style="font-size:.72rem;color:var(--muted);margin:8px 0 4px;line-height:1.6">
+      期別稱呼例如：期、季、梯次、屆、年度。<br>
+      命名格式可用：<code>{系列}</code> 系列名稱、<code>{N}</code> 數字、<code>{中N}</code> 中文數字、<code>{稱呼}</code> 期別稱呼。建立時會自動帶出名稱，仍可修改。
+    </div>
+    <div id="srPreview" style="font-size:.8rem;color:var(--accent);margin-bottom:14px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="srDeleteBtn" style="margin-right:auto;display:none" onclick="deleteSeries()">刪除系列</button>
+      <button class="btn btn-ghost" onclick="closeModal('seriesModal')">取消</button>
+      <button class="btn btn-primary" onclick="saveSeries()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 建立下一期 Modal -->
+<div id="nextPeriodModal" class="modal-overlay">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-title" id="npTitle">建立下一期</div>
+    <div class="input-group"><label>複製來源</label><select id="npSource" class="input"></select></div>
+    <div style="display:grid;grid-template-columns:1fr 3fr;gap:12px">
+      <div class="input-group" style="margin:0"><label id="npNoLabel">第幾期</label><input id="npNo" type="number" min="1" class="input" oninput="onNpNoChange()"></div>
+      <div class="input-group" style="margin:0"><label>活動名稱 <span class="required-star">*</span></label><input id="npName" type="text" class="input" oninput="onNpNameInput()"></div>
+    </div>
+    <div class="input-group" style="margin-top:12px"><label>活動日期</label><input id="npDate" type="date" class="input"></div>
+    <div id="npItemsBlock">
+      <div style="font-size:.82rem;font-weight:700;margin:4px 0 8px">要複製的設定</div>
+      <div id="npItems"></div>
+    </div>
+    <div class="csv-hint" style="margin-top:8px">不會複製報名資料、工作人員名單、報名期間與活動日期。新的一期建立後<strong>不會開放報名</strong>（手動開關 OFF、沒有報名期間），確認設定後再到「編輯」設定報名期間，或按「開放參加者報名」。</div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('nextPeriodModal')">取消</button><button class="btn btn-primary" id="npCreateBtn" onclick="createNextPeriod()">建立</button></div>
+  </div>
+</div>
+
 <!-- 系統 Modal（總管理員：新增／編輯系統） -->
 <div id="systemModal" class="modal-overlay">
   <div class="modal">
@@ -5407,7 +5819,7 @@ th[data-sort]:hover{color:var(--accent);}
     <input type="hidden" id="sysEditing">
     <div class="input-group"><label>系統名稱 <span class="required-star">*</span></label><input id="sysNameInput" type="text" class="input" placeholder="例：書法教室"></div>
     <div class="input-group"><label>系統代碼 <span class="required-star">*</span></label><input id="sysCodeInput" type="text" class="input" placeholder="例：calligraphy" autocomplete="off" style="font-family:var(--mono)">
-      <div style="font-size:.72rem;color:var(--muted);margin-top:6px" id="sysCodeHint">用在報名網址（例如 runner.html?s=calligraphy）。限小寫英文、數字、連字號「-」，2～30 字，開頭不能是連字號。<strong>建立後不能修改。</strong></div></div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:6px" id="sysCodeHint">用在報名網址（例如 member.html?s=calligraphy）。限小寫英文、數字、連字號「-」，2～30 字，開頭不能是連字號。<strong>建立後不能修改。</strong></div></div>
     <div class="input-group"><label>備註</label><input id="sysNoteInput" type="text" class="input" placeholder="只有管理員看得到"></div>
     <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="sysListedInput" checked> 列在報名首頁的系統清單</label>
     <div style="font-size:.72rem;color:var(--muted);margin-bottom:12px">報名首頁＝沒帶系統代碼的報名網址。總後台的「報名首頁設定」開啟時才會列出。</div>
