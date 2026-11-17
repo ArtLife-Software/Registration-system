@@ -12,7 +12,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
-import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, query, orderBy, where, serverTimestamp, writeBatch, runTransaction, Timestamp, deleteField } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, query, orderBy, where, limit, collectionGroup, serverTimestamp, writeBatch, runTransaction, Timestamp, deleteField } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -81,7 +81,7 @@ function sortGroupDocs(docs){
 // 確保某活動的組別都有 sortOrder：沒有的話依目前排序（sortGroupDocs 的結果）補寫成 0..N-1，
 // 之後「手動排序」的上移/下移才有穩定的基準可以交換。回傳已排序、欄位已補齊的組別清單。
 async function ensureGroupSortOrder(eventId){
-  const snap=await getDocs(query(collection(db,'events',eventId,'groups'),orderBy('createdAt','asc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'groups'),orderBy('createdAt','asc')));
   const sortedDocs=sortGroupDocs(snap.docs);
   const list=sortedDocs.map(d=>({id:d.id,...d.data()}));
   const needsBackfill=list.some(g=>typeof g.sortOrder!=='number');
@@ -89,7 +89,7 @@ async function ensureGroupSortOrder(eventId){
     const b=writeBatch(db);
     list.forEach((g,i)=>{
       if(g.sortOrder!==i){
-        b.update(doc(db,'events',eventId,'groups',g.id),{sortOrder:i});
+        b.update(doc(db,'systems',SYS,'events',eventId,'groups',g.id),{sortOrder:i});
         g.sortOrder=i;
       }
     });
@@ -100,7 +100,7 @@ async function ensureGroupSortOrder(eventId){
 // 唯讀版本：只依 sortOrder 排序、不補寫，給單純「讀組別清單」的地方用
 // （管理員手動排序過後，這裡讀到的就是排序後的結果；還沒排序過的活動則維持 createdAt 順序）
 async function getSortedGroupList(eventId){
-  const snap=await getDocs(query(collection(db,'events',eventId,'groups'),orderBy('createdAt','asc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'groups'),orderBy('createdAt','asc')));
   return sortGroupDocs(snap.docs).map(d=>({id:d.id,...d.data()}));
 }
 window.moveGroup=async function(id,dir){
@@ -110,8 +110,8 @@ window.moveGroup=async function(id,dir){
   if(idx<0||swapIdx<0||swapIdx>=list.length)return;
   const a=list[idx], b2=list[swapIdx];
   const batch=writeBatch(db);
-  batch.update(doc(db,'events',curGEvId,'groups',a.id),{sortOrder:b2.sortOrder});
-  batch.update(doc(db,'events',curGEvId,'groups',b2.id),{sortOrder:a.sortOrder});
+  batch.update(doc(db,'systems',SYS,'events',curGEvId,'groups',a.id),{sortOrder:b2.sortOrder});
+  batch.update(doc(db,'systems',SYS,'events',curGEvId,'groups',b2.id),{sortOrder:a.sortOrder});
   await batch.commit();
   loadGroups();
 }
@@ -141,7 +141,7 @@ async function checkInviteCode(g,input){
 // （跟 runner.html 線上報名共用同一個計數器，取代「掃全表找最大值+1」，
 //  管理員手動新增報名跟線上報名同時發生也不會撞號）
 async function reserveIdBlock(n){
-  const counterRef=doc(db,'config','runnerCounter');
+  const counterRef=doc(db,'systems',SYS,'config','runnerCounter');
   return await runTransaction(db,async tx=>{
     const snap=await tx.get(counterRef);
     const cur=(snap.exists()&&snap.data().value)||0;
@@ -150,11 +150,11 @@ async function reserveIdBlock(n){
   });
 }
 async function allocateUniqueId(){
-  const counterRef=doc(db,'config','runnerCounter');
+  const counterRef=doc(db,'systems',SYS,'config','runnerCounter');
   // 計數器還沒建立（或落後）時，先掃描現有參加者把它補到最大編號
   const snap=await getDoc(counterRef);
   if(!snap.exists()||!(snap.data().value>0)){
-    const allSnap=await getDocs(collection(db,'runners'));
+    const allSnap=await getDocs(collection(db,'systems',SYS,'runners'));
     let maxId=0;
     allSnap.docs.forEach(d=>{const n=parseInt((d.data().uniqueId||'').replace('R',''))||0;if(n>maxId)maxId=n;});
     await runTransaction(db,async tx=>{
@@ -168,7 +168,7 @@ async function allocateUniqueId(){
   for(let i=0;i<50;i++){
     const start=await reserveIdBlock(1);
     const cand='R'+String(start+1).padStart(4,'0');
-    const dup=await getDocs(query(collection(db,'runners'),where('uniqueId','==',cand)));
+    const dup=await getDocs(query(collection(db,'systems',SYS,'runners'),where('uniqueId','==',cand)));
     if(dup.empty) return cand;
   }
   throw new Error('無法產生參加者編號');
@@ -179,7 +179,7 @@ async function allocateUniqueId(){
 //  報名刪掉後標記也要跟著清，該號碼才能再被使用）
 function deleteBibMarker(batchOrNull,eventId,bibNumber){
   if(!bibNumber)return;
-  const ref=doc(db,'events',eventId,'bibs',bibNumber);
+  const ref=doc(db,'systems',SYS,'events',eventId,'bibs',bibNumber);
   if(batchOrNull){batchOrNull.delete(ref);}
   else{deleteDoc(ref).catch(()=>{});} // 標記本來就不存在也沒關係
 }
@@ -189,7 +189,7 @@ function deleteBibMarker(batchOrNull,eventId,bibNumber){
 // 這個極端情況先不處理，跟你確認過範圍）。
 function setBibMarker(batchOrNull,eventId,bibNumber,uniqueId){
   if(!bibNumber)return;
-  const ref=doc(db,'events',eventId,'bibs',bibNumber);
+  const ref=doc(db,'systems',SYS,'events',eventId,'bibs',bibNumber);
   const data={uniqueId:uniqueId||'',createdAt:serverTimestamp()};
   if(batchOrNull){batchOrNull.set(ref,data);}
   else{setDoc(ref,data).catch(()=>{});}
@@ -203,7 +203,7 @@ async function fetchRunnersByUniqueIds(uniqueIds) {
   if (!ids.length) return map;
   const chunks = [];
   for (let i=0; i<ids.length; i+=30) chunks.push(ids.slice(i, i+30));
-  const snaps = await Promise.all(chunks.map(c=>getDocs(query(collection(db,'runners'), where('uniqueId','in',c)))));
+  const snaps = await Promise.all(chunks.map(c=>getDocs(query(collection(db,'systems',SYS,'runners'), where('uniqueId','in',c)))));
   snaps.forEach(snap=>snap.docs.forEach(d=>{ const r=d.data(); if(r.uniqueId) map[r.uniqueId]=r; }));
   return map;
 }
@@ -337,7 +337,22 @@ function findPersonMatch(candidates, target, excludeId) {
 }
 
 // ── 登入 ──
+// 永久總管理員：寫死在這裡與 firestore.rules，避免總管理員名單被刪光後沒人能登入
 const ADMIN_EMAIL='lin.wushian@gmail.com';
+
+// ── 目前所在的系統 ──
+// 後台網址 admin.html?s=系統代碼；所有資料路徑都是 systems/{SYS}/...
+// 換系統一律重新載入頁面（admin.html?s=新代碼），不用處理各分頁暫存資料的重置。
+const urlParams=new URLSearchParams(location.search);
+let SYS=(urlParams.get('s')||'').trim().toLowerCase();
+let SYS_NAME='';
+let IS_SUPER=false;     // 是否為總管理員
+let MY_SYSTEMS=[];      // 可進入的系統 [{id,name,note,listed}]
+let MY_EMAIL='';
+// 記住最後看的活動：每個系統各記各的
+function lastEventKey(){ return 'lastEventId:'+SYS; }
+// 報名網址（跟 admin.html 放在同一個資料夾）
+function sysLink(page, sid){ return location.origin+location.pathname.replace(/[^/]*$/,'')+page+'?s='+encodeURIComponent(sid); }
 
 window.doLogin = async function() {
   const email = document.getElementById('loginEmail').value;
@@ -350,28 +365,98 @@ window.doLogin = async function() {
   }
   catch(e) { showToast('登入失敗：'+e.message,'error'); btn.textContent='登入'; btn.disabled=false; }
 }
-window.doLogout = async function() { await signOut(auth); }
-onAuthStateChanged(auth, user => {
+window.doLogout = async function() {
+  await signOut(auth);
+  // 登出後回到不帶參數的後台網址，下一個登入的人重新選系統
+  if(location.search) location.href='admin.html';
+}
+function showScreen(id){
+  ['loginScreen','hubScreen','appScreen'].forEach(x=>{
+    document.getElementById(x).style.display = x===id ? (x==='loginScreen'?'flex':'block') : 'none';
+  });
+}
+
+// 查出登入者的身分與可進入的系統
+async function loadMyAccess(email){
+  MY_EMAIL=email;
+  IS_SUPER = email===ADMIN_EMAIL;
+  if(!IS_SUPER){
+    try{ IS_SUPER=(await getDoc(doc(db,'superAdmins',email))).exists(); }catch(e){ IS_SUPER=false; }
+  }
+  let systems=[];
+  if(IS_SUPER){
+    const snap=await getDocs(collection(db,'systems'));
+    systems=snap.docs.map(d=>({id:d.id,...d.data()}));
+  }else{
+    // 系統管理員：從各系統的 admins 名單找出自己（collectionGroup 查詢）
+    const snap=await getDocs(query(collectionGroup(db,'admins'),where('email','==',email)));
+    const ids=[...new Set(snap.docs.map(d=>d.ref.parent.parent&&d.ref.parent.parent.id).filter(Boolean))];
+    const docs=await Promise.all(ids.map(id=>getDoc(doc(db,'systems',id)).catch(()=>null)));
+    systems=docs.filter(d=>d&&d.exists()).map(d=>({id:d.id,...d.data()}));
+  }
+  MY_SYSTEMS=systems.sort((a,b)=>String(a.name||a.id).localeCompare(String(b.name||b.id),'zh-Hant'));
+}
+
+onAuthStateChanged(auth, async user => {
   // 匿名身分不是管理員：不能進入後台（可能是報名頁殘留的匿名登入狀態）
-  if (user && user.isAnonymous) {
-    document.getElementById('loginScreen').style.display='flex';
-    document.getElementById('appScreen').style.display='none';
-    return;
+  if (!user || user.isAnonymous) { showScreen('loginScreen'); return; }
+  const btn=document.getElementById('loginBtn');
+  const email=String(user.email||'').toLowerCase();
+  try{
+    await loadMyAccess(email);
+  }catch(e){
+    showToast('讀取帳號權限失敗：'+e.message,'error');
+    btn.textContent='登入'; btn.disabled=false;
+    showScreen('loginScreen'); return;
   }
-  if (user) {
-    document.getElementById('loginScreen').style.display='none';
-    document.getElementById('appScreen').style.display='block';
-    document.getElementById('userEmail').textContent=user.email;
-    document.getElementById('topUserEmail').textContent=user.email;
-    // 管理員才顯示帳戶管理
-    const isAdmin=user.email===ADMIN_EMAIL;
-    document.querySelectorAll('.admin-only').forEach(el=>el.style.display=isAdmin?'flex':'none');
-    loadEvents();
-  } else {
-    document.getElementById('loginScreen').style.display='flex';
-    document.getElementById('appScreen').style.display='none';
+  btn.textContent='登入'; btn.disabled=false;
+  if(!IS_SUPER && !MY_SYSTEMS.length){
+    showToast('這個帳號沒有任何系統的管理權限，請聯絡總管理員','error');
+    await signOut(auth); return;
   }
+  document.getElementById('userEmail').textContent=user.email;
+  document.getElementById('topUserEmail').textContent=user.email;
+  // 要進哪個系統：網址指定的 → 上次進的 → 只有一個系統就直接進；其餘顯示總後台
+  const wantHub=urlParams.has('hub');
+  let target='';
+  if(!wantHub){
+    const saved=localStorage.getItem('lastSystem')||'';
+    if(SYS && MY_SYSTEMS.some(x=>x.id===SYS)) target=SYS;
+    else if(!SYS && saved && MY_SYSTEMS.some(x=>x.id===saved)) target=saved;
+    else if(!SYS && !IS_SUPER && MY_SYSTEMS.length===1) target=MY_SYSTEMS[0].id;
+    if(SYS && !target) showToast('沒有「'+SYS+'」這個系統的管理權限，或系統不存在','error');
+  }
+  if(target) enterSystem(target); else showHub();
 });
+
+// 進入系統：之後所有功能都只作用在這個系統
+function enterSystem(sid){
+  const sys=MY_SYSTEMS.find(x=>x.id===sid); if(!sys){ showHub(); return; }
+  SYS=sid; SYS_NAME=sys.name||sid;
+  localStorage.setItem('lastSystem',sid);
+  if(new URLSearchParams(location.search).get('s')!==sid) history.replaceState(null,'','admin.html?s='+encodeURIComponent(sid));
+  document.title=SYS_NAME+'｜管理後台';
+  document.getElementById('sideSysName').textContent=SYS_NAME;
+  document.getElementById('topSysName').textContent='📝 '+SYS_NAME;
+  document.getElementById('sysLinksHint').innerHTML='本系統的報名網址：'
+    +'參加者 <a href="'+esc(sysLink('runner.html',sid))+'" target="_blank" style="color:var(--accent)">'+esc(sysLink('runner.html',sid))+'</a> '
+    +'<button class="btn btn-ghost btn-sm" onclick="copySysLink(\'runner.html\',\''+escJs(sid)+'\')">複製</button><br>'
+    +'工作人員 <a href="'+esc(sysLink('staff.html',sid))+'" target="_blank" style="color:var(--accent)">'+esc(sysLink('staff.html',sid))+'</a> '
+    +'<button class="btn btn-ghost btn-sm" onclick="copySysLink(\'staff.html\',\''+escJs(sid)+'\')">複製</button>';
+  document.getElementById('appScreen').dataset.entered='1';
+  showScreen('appScreen');
+  showSection('events');
+}
+window.enterSystem=function(sid){
+  // 已經在某個系統裡（頁面上有該系統的暫存資料）就重新載入，避免殘留
+  if(document.getElementById('appScreen').dataset.entered){ location.href='admin.html?s='+encodeURIComponent(sid); return; }
+  enterSystem(sid);
+};
+window.copySysLink=async function(page,sid){
+  const url=sysLink(page,sid);
+  try{ await navigator.clipboard.writeText(url); showToast('已複製報名網址'); }
+  catch(e){ prompt('請手動複製報名網址：',url); }
+};
 
 // ── 導覽 ──
 window.showSection = function(id) {
@@ -397,7 +482,7 @@ async function loadRunners() {
   // 重新載入（編輯/刪除後）要保留篩選與勾選；先記住勾選，因為下一行就會清空表格
   const prevChecked = runnersLoadedOnce ? getCheckedIdSet('runnersTableBody') : null;
   tbody.innerHTML = '<tr><td colspan="8" class="loading-cell">載入中...</td></tr>';
-  const snap = await getDocs(collection(db,'runners'));
+  const snap = await getDocs(collection(db,'systems',SYS,'runners'));
   allRunners = snap.docs.map(d=>({id:d.id,...d.data()}));
   if (runnersLoadedOnce) { doRunnerSearch(); restoreChecks('runnersTableBody',prevChecked); }
   else renderRunners(getSorted('runnersTableBody',allRunners));
@@ -444,7 +529,7 @@ window.exportRunners = async function() {
   showToast('參加者資料已匯出');
 }
 window.editRunner = async function(id) {
-  const snap = await getDoc(doc(db,'runners',id));
+  const snap = await getDoc(doc(db,'systems',SYS,'runners',id));
   if (!snap.exists()) return;
   const r = snap.data();
   document.getElementById('runnerDocId').value = id;
@@ -472,18 +557,18 @@ window.saveRunner = async function() {
   if (hasErr) { showToast('請修正格式錯誤','error'); return; }
   const name = document.getElementById('rName').value.trim();
   if (!name) { showToast('姓名為必填','error'); return; }
-  await updateDoc(doc(db,'runners',id), {name, gender:document.getElementById('rGender').value, birthday, phone, email, idNumber:idNum, note:document.getElementById('rNote').value.trim(), updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'runners',id), {name, gender:document.getElementById('rGender').value, birthday, phone, email, idNumber:idNum, note:document.getElementById('rNote').value.trim(), updatedAt:serverTimestamp()});
   showToast('已更新'); closeModal('runnerModal'); loadRunners();
 }
 window.deleteRunner = async function(id, name) {
-  const rDoc = await getDoc(doc(db,'runners',id));
+  const rDoc = await getDoc(doc(db,'systems',SYS,'runners',id));
   const uniqueId = rDoc.exists() ? rDoc.data().uniqueId : null;
   // 檢查所有活動是否有這位參加者的報名記錄（平行查詢，避免活動一多就要序列等待很久）
   let relatedEvents = [];
   if (uniqueId) {
-    const eventsSnap = await getDocs(collection(db,'events'));
+    const eventsSnap = await getDocs(collection(db,'systems',SYS,'events'));
     const results = await Promise.all(eventsSnap.docs.map(evDoc=>
-      getDocs(query(collection(db,'events',evDoc.id,'runners'),where('uniqueId','==',uniqueId)))
+      getDocs(query(collection(db,'systems',SYS,'events',evDoc.id,'runners'),where('uniqueId','==',uniqueId)))
         .then(entrySnap=>entrySnap.empty?null:(evDoc.data().name||evDoc.id))
     ));
     relatedEvents = results.filter(Boolean);
@@ -493,7 +578,7 @@ window.deleteRunner = async function(id, name) {
     return;
   }
   if (!confirm('確定刪除參加者「'+name+'」？')) return;
-  await deleteDoc(doc(db,'runners',id)); showToast('已刪除'); loadRunners();
+  await deleteDoc(doc(db,'systems',SYS,'runners',id)); showToast('已刪除'); loadRunners();
 }
 
 // ════════════════════════════
@@ -502,14 +587,14 @@ window.deleteRunner = async function(id, name) {
 async function loadEvents() {
   const tbody = document.getElementById('eventsTableBody');
   tbody.innerHTML = '<tr><td colspan="5" class="loading-cell">載入中...</td></tr>';
-  const snap = await getDocs(query(collection(db,'events'), orderBy('createdAt','desc')));
+  const snap = await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
   if (snap.empty) { tbody.innerHTML='<tr><td colspan="5" class="loading-cell">無活動資料</td></tr>'; return; }
   // 為每個活動讀取 groups 子集合
   const rows = await Promise.all(snap.docs.map(async d => {
     const ev=d.data();
     const [gList,awardSnap]=await Promise.all([
       getSortedGroupList(d.id),
-      getDoc(doc(db,'events',d.id,'settings','award')).catch(()=>null)
+      getDoc(doc(db,'systems',SYS,'events',d.id,'settings','award')).catch(()=>null)
     ]);
     // 沒設定過＝不開放下載
     const awardOpen=!!(awardSnap&&awardSnap.exists()&&awardSnap.data().open);
@@ -537,12 +622,12 @@ async function loadEvents() {
   tbody.innerHTML = rows.join('');
 }
 window.toggleRegistration = async function(id,open){
-  await updateDoc(doc(db,'events',id),{registrationOpen:open,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',id),{registrationOpen:open,updatedAt:serverTimestamp()});
   showToast(open?'已開放參加者報名':'已關閉參加者報名');
   loadEvents();
 }
 window.toggleStaffRegistration = async function(id,open){
-  await updateDoc(doc(db,'events',id),{staffRegistrationOpen:open,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',id),{staffRegistrationOpen:open,updatedAt:serverTimestamp()});
   showToast(open?'已開放工作人員報名':'已關閉工作人員報名');
   loadEvents();
 }
@@ -571,7 +656,7 @@ window.showAddEvent = function() {
   document.getElementById('eventModal').style.display='flex';
 }
 window.editEvent = async function(id) {
-  const snap = await getDoc(doc(db,'events',id)); if (!snap.exists()) return;
+  const snap = await getDoc(doc(db,'systems',SYS,'events',id)); if (!snap.exists()) return;
   const ev = snap.data();
   document.getElementById('eventModalTitle').textContent='編輯活動';
   document.getElementById('eventDocId').value=id;
@@ -704,10 +789,10 @@ window.saveEvent = async function() {
     updatedAt:serverTimestamp()
   };
   if (!data.name) { showToast('活動名稱為必填','error'); return; }
-  if (id) { await updateDoc(doc(db,'events',id),data); showToast('已更新'); }
+  if (id) { await updateDoc(doc(db,'systems',SYS,'events',id),data); showToast('已更新'); }
   else {
     data.createdAt=serverTimestamp(); data.groupNames=[];
-    await addDoc(collection(db,'events'),data);
+    await addDoc(collection(db,'systems',SYS,'events'),data);
     showToast('已新增');
   }
   closeModal('eventModal'); loadEvents();
@@ -768,7 +853,7 @@ window.showAddGroup=function(){
   document.getElementById('groupForm').style.display='block';
 }
 window.editGroup=async function(id){
-  const snap=await getDoc(doc(db,'events',curGEvId,'groups',id)); if(!snap.exists())return;
+  const snap=await getDoc(doc(db,'systems',SYS,'events',curGEvId,'groups',id)); if(!snap.exists())return;
   const g=snap.data();
   document.getElementById('groupFormTitle').textContent='編輯組別';
   document.getElementById('groupDocId').value=id; document.getElementById('gName').value=g.name||'';
@@ -836,7 +921,7 @@ window.saveGroup=async function(){
     if(gBibRangeMin>0&&gBibRangeMax>0&&gBibRangeMin>gBibRangeMax){showToast('自動號碼最小值不能大於最大值','error'); return;}
     if(gCustomBibRangeMin>0&&gCustomBibRangeMax>0&&gCustomBibRangeMin>gCustomBibRangeMax){showToast('自選號碼最小值不能大於最大值','error'); return;}
     // 位數固定跟活動一致，範圍不能超出活動「參加者編號位數」能表示的上限
-    const evDocForPad=await getDoc(doc(db,'events',curGEvId));
+    const evDocForPad=await getDoc(doc(db,'systems',SYS,'events',curGEvId));
     const gBibPadLength=evDocForPad.data()?.bibPadLength||3;
     const gBibPadMax=Math.pow(10,gBibPadLength)-1;
     if(gBibRangeMax>gBibPadMax){showToast('自動號碼最大值（'+gBibRangeMax+'）超出活動「參加者編號位數」可表示的範圍（'+gBibPadLength+'位最大到 '+gBibPadMax+'）','error'); return;}
@@ -852,22 +937,22 @@ window.saveGroup=async function(){
   // 進而自動同步歷史報名資料的顯示名稱。
   let oldName=null;
   if(id){
-    const oldSnap=await getDoc(doc(db,'events',curGEvId,'groups',id));
+    const oldSnap=await getDoc(doc(db,'systems',SYS,'events',curGEvId,'groups',id));
     oldName=oldSnap.exists()?(oldSnap.data().name||''):null;
   }
   if(id){
     if(inviteInput==='清除'){data.inviteCodeHash=deleteField();data.inviteCode=deleteField();}
     else if(inviteInput){data.inviteCodeHash=await sha256Hex(inviteInput);data.inviteCode=deleteField();}
-    await updateDoc(doc(db,'events',curGEvId,'groups',id),data);
+    await updateDoc(doc(db,'systems',SYS,'events',curGEvId,'groups',id),data);
   }
   else{
     if(inviteInput&&inviteInput!=='清除')data.inviteCodeHash=await sha256Hex(inviteInput);
     const existingList=await ensureGroupSortOrder(curGEvId);
     data.sortOrder=existingList.length;
-    data.createdAt=serverTimestamp();await addDoc(collection(db,'events',curGEvId,'groups'),data);
+    data.createdAt=serverTimestamp();await addDoc(collection(db,'systems',SYS,'events',curGEvId,'groups'),data);
   }
   const gListForNames=await getSortedGroupList(curGEvId);
-  await updateDoc(doc(db,'events',curGEvId),{groupNames:gListForNames.map(g=>g.name),updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',curGEvId),{groupNames:gListForNames.map(g=>g.name),updatedAt:serverTimestamp()});
 
   let syncMsg='';
   if(id&&oldName&&oldName!==name){
@@ -878,7 +963,7 @@ window.saveGroup=async function(){
 }
 // 組別改名後，把該組別底下所有報名資料的 group 欄位同步成新名稱。
 async function cascadeGroupRename(eventId,groupId,oldName,newName){
-  const snap=await getDocs(query(collection(db,'events',eventId,'runners'),where('groupId','==',groupId)));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('groupId','==',groupId)));
   let batch=writeBatch(db); let n=0; let count=0;
   for(const d of snap.docs){
     batch.update(d.ref,{group:newName,updatedAt:serverTimestamp()});
@@ -890,9 +975,9 @@ async function cascadeGroupRename(eventId,groupId,oldName,newName){
 }
 window.deleteGroup=async function(id,name){
   if(!confirm('確定刪除組別「'+name+'」？'))return;
-  await deleteDoc(doc(db,'events',curGEvId,'groups',id));
+  await deleteDoc(doc(db,'systems',SYS,'events',curGEvId,'groups',id));
   const gListForNames=await getSortedGroupList(curGEvId);
-  await updateDoc(doc(db,'events',curGEvId),{groupNames:gListForNames.map(g=>g.name)});
+  await updateDoc(doc(db,'systems',SYS,'events',curGEvId),{groupNames:gListForNames.map(g=>g.name)});
   showToast('已刪除'); loadGroups();
 }
 window.cancelGroupForm=function(){document.getElementById('groupForm').style.display='none';}
@@ -922,7 +1007,7 @@ window.manageCustomFields=async function(eid,ename,type){
   }
   document.getElementById('cfGroupsRow').style.display=curCFType==='runner'?'block':'none';
   document.getElementById('cfBannerLabel').textContent='宣傳圖片 URL — '+(curCFType==='staff'?'工作人員':'參加者')+'（選填，會顯示在報名表單最上方）';
-  const evDocForBanner=await getDoc(doc(db,'events',eid));
+  const evDocForBanner=await getDoc(doc(db,'systems',SYS,'events',eid));
   const bannerKey=curCFType==='staff'?'staffBannerUrl':'bannerUrl';
   const bUrl=evDocForBanner.data()?.[bannerKey]||'';
   document.getElementById('cfBannerUrl').value=bUrl;
@@ -954,11 +1039,11 @@ window.saveCfBanner=async function(){
   const bannerUrl=document.getElementById('cfBannerUrl').value.trim();
   const bannerLinkText=document.getElementById('cfBannerLinkText').value.trim();
   const bannerLinkUrl=document.getElementById('cfBannerLinkUrl').value.trim();
-  await updateDoc(doc(db,'events',curCFEvId),{[bannerKey]:bannerUrl,[linkTextKey]:bannerLinkText,[linkUrlKey]:bannerLinkUrl,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[bannerKey]:bannerUrl,[linkTextKey]:bannerLinkText,[linkUrlKey]:bannerLinkUrl,updatedAt:serverTimestamp()});
   showToast('已儲存宣傳圖片設定');
 }
 async function loadFieldSettings(){
-  const evDoc=await getDoc(doc(db,'events',curCFEvId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const key=curCFType==='staff'?'staffFieldSettings':'fieldSettings';
   const fs=evDoc.data()?.[key]||{};
   const fields=curCFType==='staff'?['phone','email']:['phone','email','idNumber'];
@@ -980,11 +1065,11 @@ window.saveFieldSettings=async function(){
       required:document.getElementById('cfFS_'+f+'_req').checked
     };
   });
-  await updateDoc(doc(db,'events',curCFEvId),{[key]:fs,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[key]:fs,updatedAt:serverTimestamp()});
   showToast('已儲存標準欄位設定');
 }
 async function loadCustomFields(){
-  const evDoc=await getDoc(doc(db,'events',curCFEvId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
   const fields=evDoc.data()?.[fieldKey]||[];
   const list=document.getElementById('cfList');
@@ -1007,11 +1092,11 @@ async function loadCustomFields(){
 }
 window.moveCustomField=async function(i,dir){
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
-  const evDoc=await getDoc(doc(db,'events',curCFEvId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fields=evDoc.data()?.[fieldKey]||[];
   const j=i+dir; if(j<0||j>=fields.length)return;
   [fields[i],fields[j]]=[fields[j],fields[i]];
-  await updateDoc(doc(db,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
   loadCustomFields();
 }
 // 把「適用組別」陣列中的一個組別ID解析成目前的組別名稱；
@@ -1040,7 +1125,7 @@ window.showAddCustomField=function(){
 }
 window.editCustomField=async function(i){
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
-  const evDoc=await getDoc(doc(db,'events',curCFEvId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fields=evDoc.data()?.[fieldKey]||[];
   const f=fields[i];
   document.getElementById('cfFormTitle').textContent='編輯欄位';
@@ -1085,7 +1170,7 @@ window.saveCustomField=async function(){
     field.allowOther=document.getElementById('cfAllowOther').checked;
   }
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
-  const evDoc=await getDoc(doc(db,'events',curCFEvId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fields=evDoc.data()?.[fieldKey]||[];
   if(idx!==''){
     field.id=fields[idx].id;
@@ -1093,19 +1178,19 @@ window.saveCustomField=async function(){
   } else {
     fields.push(field);
   }
-  await updateDoc(doc(db,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
   document.getElementById('cfForm').style.display='none';
   showToast('已儲存');
   loadCustomFields();
 }
 window.deleteCustomField=async function(i){
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
-  const evDoc=await getDoc(doc(db,'events',curCFEvId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fields=evDoc.data()?.[fieldKey]||[];
   const label=fields[i]?.label||'';
   if(!confirm('確定刪除欄位「'+label+'」？已填寫的報名資料中此欄位的值將保留但不再顯示。'))return;
   fields.splice(i,1);
-  await updateDoc(doc(db,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
   showToast('已刪除');
   loadCustomFields();
 }
@@ -1156,7 +1241,7 @@ let curEntryCustomFields=[];
 let lastLoadedEntryEventId=null; // 用來判斷「同一場活動重新載入」還是「換了活動」
 window.loadEntries=async function(){
   const eventId=document.getElementById('entryEventSelect').value;
-  if(eventId)localStorage.setItem('lastEventId',eventId); // 記住最後看的活動，切到其他分頁時自動帶入
+  if(eventId)localStorage.setItem(lastEventKey(),eventId); // 記住最後看的活動，切到其他分頁時自動帶入
   const tbody=document.getElementById('entriesTableBody');
   // 同一場活動重新載入（編輯/刪除/報到後）要保留篩選與勾選；先記住勾選，因為下面一開始就會清空表格
   const sameEvent=lastLoadedEntryEventId===eventId;
@@ -1164,7 +1249,7 @@ window.loadEntries=async function(){
   const baseCols=13; // 加了報到欄
   if(!eventId){tbody.innerHTML='<tr><td colspan="'+baseCols+'" class="loading-cell">請先選擇活動</td></tr>';return;}
   tbody.innerHTML='<tr><td colspan="'+baseCols+'" class="loading-cell">載入中...</td></tr>';
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   curEntryCustomFields=evDoc.data()?.customFields||[];
   curBibPadLength=evDoc.data()?.bibPadLength||3;
   curBibRange={min:evDoc.data()?.bibRangeMin||0, max:evDoc.data()?.bibRangeMax||0};
@@ -1187,11 +1272,11 @@ window.loadEntries=async function(){
     +'<th data-sort="createdAt" onclick="sortTable(\'entriesTableBody\',\'createdAt\')">報名時間<span class="sort-icon"> ⇅</span></th>'
     +'<th data-sort="checkin.checkedInAt" onclick="sortTable(\'entriesTableBody\',\'checkin.checkedInAt\')">報到<span class="sort-icon"> ⇅</span></th>'
     +'<th>操作</th>';
-  const snap=await getDocs(collection(db,'events',eventId,'runners'));
+  const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const uniqueIds=snap.docs.map(d=>d.data().uniqueId);
   const [rMap, checkinSnap]=await Promise.all([
     fetchRunnersByUniqueIds(uniqueIds),
-    getDocs(collection(db,'events',eventId,'checkins'))
+    getDocs(collection(db,'systems',SYS,'events',eventId,'checkins'))
   ]);
   const checkinMap={};
   checkinSnap.docs.forEach(d=>{checkinMap[d.id]=d.data();});
@@ -1205,7 +1290,7 @@ window.loadEntries=async function(){
     try{
       let b=writeBatch(db);let n=0;
       for(const e of missing){
-        b.update(doc(db,'events',eventId,'runners',e.id),{name:rMap[e.uniqueId].name});
+        b.update(doc(db,'systems',SYS,'events',eventId,'runners',e.id),{name:rMap[e.uniqueId].name});
         if(++n>=400){await b.commit();b=writeBatch(db);n=0;}
       }
       if(n>0)await b.commit();
@@ -1303,7 +1388,7 @@ window.doEntrySearch=function(){
 // 第二階段（範圍用完）改成搜尋「整個位數能表示的範圍」（含範圍以下閒置的號碼），
 // 第三階段（連整個位數範圍都用完）才真的超出位數往上配
 async function getNextBibNumber(eventId,groupId) {
-  const snap=await getDocs(collection(db,'events',eventId,'runners'));
+  const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const bibs=snap.docs.map(d=>parseInt(d.data().bibNumber)||0);
   const {pad,min,max,customMin:cMin,customMax:cMax}=getEffBibConfigForGroup(curEntryGroupMap[groupId]);
   for(let n=cMin;n<=cMax;n++){if(!bibs.includes(n))return String(n).padStart(pad,'0');}
@@ -1328,7 +1413,7 @@ let availBibSetAdmin=null, availBibSetAdminEventId='', availBibCursorAdmin=1;
 const AVAIL_BIB_BATCH_ADMIN=30;
 async function getUsedBibSetAdmin(eventId){
   if(availBibSetAdmin && availBibSetAdminEventId===eventId) return availBibSetAdmin;
-  const snap=await getDocs(collection(db,'events',eventId,'runners'));
+  const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const set=new Set();
   snap.docs.forEach(d=>{const b=d.data().bibNumber; if(b)set.add(b);});
   availBibSetAdmin=set; availBibSetAdminEventId=eventId;
@@ -1420,15 +1505,15 @@ window.handleEntryCSV=async function(e){
   const lines=text.trim().split('\n');
   if(lines.length<2){showToast('CSV無資料','error');return;}
 
-  const runnerSnap=await getDocs(collection(db,'runners'));
+  const runnerSnap=await getDocs(collection(db,'systems',SYS,'runners'));
   const existingRunners=runnerSnap.docs.map(d=>({docId:d.id,...d.data()}));
   // CSV 裡的「組別」欄位是名稱文字，匯入時就近解析成目前的 groupId，
   // 這樣即使之後組別改名，這批匯入的報名資料仍然關聯得到正確組別。
-  const groupsForImportSnap=await getDocs(query(collection(db,'events',eventId,'groups'),orderBy('createdAt','asc')));
+  const groupsForImportSnap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'groups'),orderBy('createdAt','asc')));
   const groupIdByName={};
   const groupDataById={}; // 供每列判斷該組別是否有自訂號碼規則（bibOverride）
   groupsForImportSnap.docs.forEach(d=>{groupIdByName[d.data().name]=d.id; groupDataById[d.id]=d.data();});
-  const entrySnap=await getDocs(collection(db,'events',eventId,'runners'));
+  const entrySnap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const existingEntries=entrySnap.docs.map(d=>({docId:d.id,...d.data()}));
   const usedBibs=new Set(existingEntries.map(e=>e.bibNumber));
 
@@ -1440,7 +1525,7 @@ window.handleEntryCSV=async function(e){
   // 之後新參加者的編號一律從計數器保留區段配發——跟線上報名共用同一個計數器，
   // 匯入期間就算有人同時線上報名也不會撞號。
   await runTransaction(db,async tx=>{
-    const ref=doc(db,'config','runnerCounter');
+    const ref=doc(db,'systems',SYS,'config','runnerCounter');
     const snap=await tx.get(ref);
     const cur=(snap.exists()&&snap.data().value)||0;
     if(maxId>cur) tx.set(ref,{value:maxId});
@@ -1490,11 +1575,11 @@ window.handleEntryCSV=async function(e){
       if(email&&email!==match.email)updates.email=email;
       if(idNumber&&idNumber!==match.idNumber)updates.idNumber=idNumber;
       if(note&&note!==match.note)updates.note=note;
-      if(Object.keys(updates).length){updates.updatedAt=serverTimestamp();await bop(b=>b.update(doc(db,'runners',match.docId),updates));updatedRunners++;}
+      if(Object.keys(updates).length){updates.updatedAt=serverTimestamp();await bop(b=>b.update(doc(db,'systems',SYS,'runners',match.docId),updates));updatedRunners++;}
       uniqueId=match.uniqueId;
     } else {
       uniqueId=await nextImportId();
-      const ref=doc(collection(db,'runners'));
+      const ref=doc(collection(db,'systems',SYS,'runners'));
       await bop(b=>b.set(ref,{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()}));
       existingRunners.push({docId:ref.id,...runnerData,uniqueId});
       existingUids.add(uniqueId);
@@ -1505,7 +1590,7 @@ window.handleEntryCSV=async function(e){
     const existingEntryObj=existingEntries.find(e=>e.uniqueId===uniqueId);
     if(existingEntryObj){
       if(existingEntryObj.cancelRequested){
-        await bop(b=>b.update(doc(db,'events',eventId,'runners',existingEntryObj.docId),{
+        await bop(b=>b.update(doc(db,'systems',SYS,'events',eventId,'runners',existingEntryObj.docId),{
           group,groupId:groupIdByName[group]||'',cancelRequested:deleteField(),cancelRequestedAt:deleteField(),updatedAt:serverTimestamp()
         }));
         reactivatedEntries++;
@@ -1547,7 +1632,7 @@ window.handleEntryCSV=async function(e){
     }
     usedBibs.add(finalBib);
 
-    const entryRef=doc(collection(db,'events',eventId,'runners'));
+    const entryRef=doc(collection(db,'systems',SYS,'events',eventId,'runners'));
     const groupId=groupIdByName[group]||'';
     await bop(b=>b.set(entryRef,{uniqueId,name,bibNumber:finalBib,group,groupId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()}));
     // 同步建立號碼佔用標記，參加者端的原子防撞號機制才能正確涵蓋這個號碼（不然標記不存在等於沒鎖住）
@@ -1571,7 +1656,7 @@ window.exportEntries=async function(){
   const eventId=document.getElementById('entryEventSelect').value;
   if(!eventId){showToast('請先選擇活動','error');return;}
   if(!allEntries.length){showToast('無報名資料','error');return;}
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const evName=evDoc.data()?.name||'活動';
   const evDate=evDoc.data()?.date||'';
   const customFields=evDoc.data()?.customFields||[];
@@ -1668,14 +1753,14 @@ function validateEntryCustomFields(){
 
 window.cancelCheckin=async function(eventId,uniqueId){
   if(!confirm('確定取消此參加者的報到記錄？'))return;
-  await deleteDoc(doc(db,'events',eventId,'checkins',uniqueId));
+  await deleteDoc(doc(db,'systems',SYS,'events',eventId,'checkins',uniqueId));
   showToast('已取消報到');
   loadEntries();
 }
 // 手動標記報到
 window.manualCheckin=async function(eventId,uniqueId){
   if(!confirm('確定為此參加者標記報到？'))return;
-  await setDoc(doc(db,'events',eventId,'checkins',uniqueId),{
+  await setDoc(doc(db,'systems',SYS,'events',eventId,'checkins',uniqueId),{
     uniqueId, checkedInAt:serverTimestamp(), deviceName:'手動報到'
   });
   showToast('已標記報到');
@@ -1713,7 +1798,7 @@ window.showAddEntry=async function(){
   document.getElementById('eGroupHint').textContent='';
   ['eBib','eBirthday','ePhone','eEmail','eIdNumber'].forEach(id=>setFieldError(id,false));
   // 套用 fieldSettings
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   applyEntryFieldSettings(evDoc.data()?.fieldSettings||{});
   await loadEntryGroupOptions('');
   renderEntryCustomFields({});
@@ -1757,7 +1842,7 @@ async function validateGroupLimits(groupId, gender, birthday, inviteInput){
   const g=curEntryGroupMap[groupId];
   if(!g)return null;
   const eventId=document.getElementById('entryEventSelect').value;
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const evDate=evDoc.data()?.date||'';
   // 性別
   if(g.genderLimit&&gender&&g.genderLimit!==gender)
@@ -1777,7 +1862,7 @@ async function validateGroupLimits(groupId, gender, birthday, inviteInput){
   }
   // 組別名額
   if(g.groupCapacity>0){
-    const entrySnap=await getDocs(query(collection(db,'events',eventId,'runners'),where('groupId','==',groupId)));
+    const entrySnap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('groupId','==',groupId)));
     const docId=document.getElementById('entryDocId').value;
     const count=entrySnap.docs.filter(d=>d.id!==docId).length;
     if(count>=g.groupCapacity) return '此組別已額滿（'+g.groupCapacity+'人）';
@@ -1871,7 +1956,7 @@ window.validateEntryField=async function(field){
         showToast('編號須為 '+min+'～'+max+' 之間的正整數','error');
         return;
       }
-      const snap=await getDocs(collection(db,'events',eventId,'runners'));
+      const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
       const dup=snap.docs.find(d=>d.data().bibNumber===bib&&d.id!==docId);
       setFieldError('eBib',!!dup);
       if(dup){
@@ -1891,7 +1976,7 @@ window.searchEntryRunner=async function(){
   const t=document.getElementById('entryRunnerSearch').value.trim().toLowerCase();
   const results=document.getElementById('entryRunnerResults');
   if(!t){results.style.display='none';return;}
-  const snap=await getDocs(collection(db,'runners'));
+  const snap=await getDocs(collection(db,'systems',SYS,'runners'));
   const matched=snap.docs.map(d=>d.data()).filter(r=>
     ['uniqueId','name','gender','birthday','phone','email','idNumber','note'].some(f=>(r[f]||'').toLowerCase().includes(t))
   ).slice(0,8);
@@ -1923,9 +2008,9 @@ window.selectEntryRunner=function(uid,name,gender,birthday,phone,email,idNumber,
 }
 window.editEntry=async function(id){
   const eventId=document.getElementById('entryEventSelect').value;
-  const snap=await getDoc(doc(db,'events',eventId,'runners',id)); if(!snap.exists())return;
+  const snap=await getDoc(doc(db,'systems',SYS,'events',eventId,'runners',id)); if(!snap.exists())return;
   const e=snap.data();
-  const rSnap=await getDocs(query(collection(db,'runners'),where('uniqueId','==',e.uniqueId)));
+  const rSnap=await getDocs(query(collection(db,'systems',SYS,'runners'),where('uniqueId','==',e.uniqueId)));
   const r=rSnap.empty?{}:rSnap.docs[0].data();
   document.getElementById('entryModalTitle').textContent='編輯參加者';
   document.getElementById('entryDocId').value=id;
@@ -1954,7 +2039,7 @@ window.editEntry=async function(id){
   document.getElementById('eGroupHint').textContent='';
   ['eBib','eBirthday','ePhone','eEmail','eIdNumber'].forEach(fid=>setFieldError(fid,false));
   // 套用 fieldSettings
-  const evDoc2=await getDoc(doc(db,'events',eventId));
+  const evDoc2=await getDoc(doc(db,'systems',SYS,'events',eventId));
   applyEntryFieldSettings(evDoc2.data()?.fieldSettings||{});
   renderEntryCustomFields(e.customData||{});
   // 組別註解/限制摘要 + 家長陪同初始判斷：必須在「生日與組別都已填入欄位之後」執行。
@@ -1975,7 +2060,7 @@ window.saveEntry=async function(){
   const gender=document.getElementById('eGender').value;
   const birthday=document.getElementById('eBirthday').value.trim();
   // fieldSettings 控制顯示/必填
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const fs=evDoc.data()?.fieldSettings||{};
   const phone=(fs.phone?.show!==false)?document.getElementById('ePhone').value.trim():'';
   const email=(fs.email?.show!==false)?document.getElementById('eEmail').value.trim():'';
@@ -2044,7 +2129,7 @@ window.saveEntry=async function(){
   if(missingCF){showToast('「'+missingCF.label+'」為必填'+(missingCF.type==='checkbox'?'，請勾選':''),'error');return;}
   const customData=collectEntryCustomData();
   // 編號重複檢查
-  const snap=await getDocs(collection(db,'events',eventId,'runners'));
+  const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const dup=snap.docs.find(d=>d.data().bibNumber===bibNumber&&d.id!==id);
   if(dup){
     setFieldError('eBib',true);showToast('編號已被使用','error');
@@ -2056,35 +2141,35 @@ window.saveEntry=async function(){
   // 若未選擇現有參加者，比對資料庫（新增報名專用：決定沿用既有參加者還是建立新參加者）
   if(!uniqueId){
     const runnerData={name,gender,birthday,phone,email,idNumber:idNum,note};
-    const runnerSnap=await getDocs(collection(db,'runners'));
+    const runnerSnap=await getDocs(collection(db,'systems',SYS,'runners'));
     const existingRunners=runnerSnap.docs.map(d=>({docId:d.id,...d.data()}));
     const {match,status}=findPersonMatch(existingRunners,runnerData);
     if(match&&status==='same'){
       // 身分證號相同，確定同一人，不用問，直接沿用並同步最新資料
       uniqueId=match.uniqueId;
-      await updateDoc(doc(db,'runners',match.docId),{...runnerData,updatedAt:serverTimestamp()});
+      await updateDoc(doc(db,'systems',SYS,'runners',match.docId),{...runnerData,updatedAt:serverTimestamp()});
     }else if(match&&status==='ambiguous'){
       const result=await showSimilarPersonDialog(match,runnerData);
       if(result==='refill')return;
       matchAudit={matchedUniqueId:match.uniqueId,decision:result,matchedFields:matchedFieldsOf(match,runnerData)};
       if(result==='same'){
         uniqueId=match.uniqueId;
-        await updateDoc(doc(db,'runners',match.docId),{...runnerData,updatedAt:serverTimestamp()});
+        await updateDoc(doc(db,'systems',SYS,'runners',match.docId),{...runnerData,updatedAt:serverTimestamp()});
       }else{
         // 非同一人：建立新參加者（計數器配號，與線上報名共用、不會撞號）
         uniqueId=await allocateUniqueId();
-        await setDoc(doc(collection(db,'runners')),{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+        await setDoc(doc(collection(db,'systems',SYS,'runners')),{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       }
     }else{
       // 確定非同一人／無比對結果：建立新參加者（計數器配號，與線上報名共用、不會撞號）
       uniqueId=await allocateUniqueId();
-      await setDoc(doc(collection(db,'runners')),{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+      await setDoc(doc(collection(db,'systems',SYS,'runners')),{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
     }
   }
   // 已報名檢查（新增時才需要，編輯時跳過）——已報名過此活動就直接拒絕，不要靜默更新，
   // 請管理員直接去編輯既有那筆記錄（靜默更新會漏改編號，而且不透明，容易搞混是新增還是更新）
   if(!id){
-    const existingEntry=await getDocs(query(collection(db,'events',eventId,'runners'),where('uniqueId','==',uniqueId)));
+    const existingEntry=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('uniqueId','==',uniqueId)));
     if(!existingEntry.empty){
       const exData=existingEntry.docs[0].data();
       showToast(exData.cancelRequested
@@ -2097,13 +2182,13 @@ window.saveEntry=async function(){
   // （編輯既有報名記錄、或新增報名時選了既有參加者，都算是要把這份修改寫回既有參加者主檔，都要檢查）
   const bindingExistingRunner=id||document.getElementById('entryUniqueId').value;
   if(bindingExistingRunner){
-    const rSnap=await getDocs(query(collection(db,'runners'),where('uniqueId','==',uniqueId)));
+    const rSnap=await getDocs(query(collection(db,'systems',SYS,'runners'),where('uniqueId','==',uniqueId)));
     const oldProfile=rSnap.empty?{}:rSnap.docs[0].data();
     const newIdentity={name,gender,birthday,phone,email,idNumber:idNum};
     const identityChanged=['name','gender','birthday','phone','email','idNumber']
       .some(f=>(oldProfile[f]||'')!==(newIdentity[f]||''));
     if(identityChanged){
-      const allRunnerSnap=await getDocs(collection(db,'runners'));
+      const allRunnerSnap=await getDocs(collection(db,'systems',SYS,'runners'));
       const candidates=allRunnerSnap.docs.map(d=>({docId:d.id,...d.data()})).filter(r=>r.uniqueId!==uniqueId);
       const {match,status}=findPersonMatch(candidates,newIdentity);
       const conflictMsg='此身分資料與另一筆報名重複，如需異動請聯繫主辦單位，或請該參加者申請取消後重新報名';
@@ -2124,16 +2209,16 @@ window.saveEntry=async function(){
   // 只要綁定到既有參加者（編輯，或新增時選了現有參加者），就把表單上的個人資料同步寫回 runners 主檔
   // （新增且未選現有參加者的情況，主檔已在上方第1066-1105行建立/更新過，這裡不重複處理）
   if(id || (document.getElementById('entryUniqueId').value)){
-    const rSnap=await getDocs(query(collection(db,'runners'),where('uniqueId','==',uniqueId)));
+    const rSnap=await getDocs(query(collection(db,'systems',SYS,'runners'),where('uniqueId','==',uniqueId)));
     if(!rSnap.empty){
-      await updateDoc(doc(db,'runners',rSnap.docs[0].id),{name,gender,birthday,phone,email,idNumber:idNum,note,updatedAt:serverTimestamp()});
+      await updateDoc(doc(db,'systems',SYS,'runners',rSnap.docs[0].id),{name,gender,birthday,phone,email,idNumber:idNum,note,updatedAt:serverTimestamp()});
     }
   }
   const data={uniqueId,name,bibNumber,group,groupId,customData,...parentalData,updatedAt:serverTimestamp()};
   if(matchAudit)data.matchAudit={...matchAudit,decidedAt:serverTimestamp()};
   if(id){
     const oldBib=document.getElementById('eBib').dataset.oldBib||'';
-    await updateDoc(doc(db,'events',eventId,'runners',id),data);
+    await updateDoc(doc(db,'systems',SYS,'events',eventId,'runners',id),data);
     showToast('已更新');
     // 號碼有變動的話，要同步「號碼佔用標記」——刪掉舊的、建立新的，
     // 參加者端的原子防撞號機制（t.create）才能正確涵蓋這個號碼，不然標記不存在等於沒鎖住
@@ -2143,7 +2228,7 @@ window.saveEntry=async function(){
     }
   }else{
     data.createdAt=serverTimestamp();
-    await addDoc(collection(db,'events',eventId,'runners'),data);
+    await addDoc(collection(db,'systems',SYS,'events',eventId,'runners'),data);
     showToast('已新增');
     setBibMarker(null,eventId,bibNumber,uniqueId);
   }
@@ -2236,7 +2321,7 @@ window.exportEntryInfoImages=async function(){
   const scopeText=checked.length?'勾選的 '+list.length+' 位參加者':'目前列表顯示的全部 '+list.length+' 位參加者';
   if(!confirm('將匯出'+scopeText+'的報名資訊圖片（每人一張 PNG，打包成 ZIP）。\n人數較多時需要一點時間，過程中請勿關閉頁面。\n\n確定匯出？'))return;
 
-  const ev=(await getDoc(doc(db,'events',eventId))).data()||{};
+  const ev=(await getDoc(doc(db,'systems',SYS,'events',eventId))).data()||{};
   // 畫在畫面外的暫存容器裡逐張截圖，不影響目前畫面
   const holder=document.createElement('div');
   holder.style.cssText='position:fixed;left:-10000px;top:0;width:420px';
@@ -2279,7 +2364,7 @@ window.showEntryInfo=async function(entryId){
   const eventId=document.getElementById('entryEventSelect').value;
   const e=allEntries.find(x=>x.id===entryId);
   if(!e){showToast('找不到此筆報名資料，請重新整理','error');return;}
-  const ev=(await getDoc(doc(db,'events',eventId))).data()||{};
+  const ev=(await getDoc(doc(db,'systems',SYS,'events',eventId))).data()||{};
   showEntryResult(entryToInfo(e,ev));
 }
 window.saveEntryResultPng=async function(){
@@ -2303,7 +2388,7 @@ window.deleteEntry=async function(id,name){
   if(!confirm('確定刪除「'+name+'」的報名資料？'))return;
   // 一併刪除號碼預約標記，讓這個號碼之後可以重新配發
   const entryObj=allEntries.find(x=>x.docId===id||x.id===id);
-  await deleteDoc(doc(db,'events',eventId,'runners',id));
+  await deleteDoc(doc(db,'systems',SYS,'events',eventId,'runners',id));
   deleteBibMarker(null,eventId,entryObj&&entryObj.bibNumber);
   availBibSetAdmin=null; // 刪除後空出一個號碼，「查看可用號碼」快取要清掉，不然要重整頁面才會反映
   showToast('已刪除'); loadEntries();
@@ -2312,21 +2397,21 @@ window.deleteEntry=async function(id,name){
 window.rejectCancelRequest=async function(id){
   const eventId=document.getElementById('entryEventSelect').value;
   if(!confirm('確定駁回此筆取消申請？報名資料會繼續保留。'))return;
-  await updateDoc(doc(db,'events',eventId,'runners',id),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()});
+  await updateDoc(doc(db,'systems',SYS,'events',eventId,'runners',id),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()});
   showToast('已駁回申請'); loadEntries();
 }
 
 // ── 共用：把活動清單填進下拉選單，並還原上次選的活動 ──
 async function loadEventSelect(selectId, cb) {
   const select=document.getElementById(selectId); if(!select)return;
-  const snap=await getDocs(query(collection(db,'events'),orderBy('createdAt','desc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc')));
   select.innerHTML='<option value="">請選擇活動...</option>';
   snap.docs.forEach(d=>{
     const ev=d.data(); const o=document.createElement('option');
     o.value=d.id; o.textContent=ev.name+(ev.date?' ('+ev.date+')':'');
     select.appendChild(o);
   });
-  const saved=localStorage.getItem('lastEventId');
+  const saved=localStorage.getItem(lastEventKey());
   if(saved&&snap.docs.find(d=>d.id===saved))select.value=saved;
   await cb(select.value);
 }
@@ -2413,15 +2498,15 @@ window.loadStats=async function(){
   const eventId=document.getElementById('statsEventSelect').value;
   const content=document.getElementById('statsContent');
   if(!eventId){content.innerHTML='<p style="color:var(--muted);text-align:center;padding:40px">請選擇活動</p>';return;}
-  localStorage.setItem('lastEventId',eventId);
+  localStorage.setItem(lastEventKey(),eventId);
   content.innerHTML='<div class="loading-cell">載入中...</div>';
   try{
     const [entrySnap, gList, checkinSnap, staffSnap, evDoc]=await Promise.all([
-      getDocs(collection(db,'events',eventId,'runners')),
+      getDocs(collection(db,'systems',SYS,'events',eventId,'runners')),
       getSortedGroupList(eventId),
-      getDocs(collection(db,'events',eventId,'checkins')),
-      getDocs(collection(db,'events',eventId,'staff')),
-      getDoc(doc(db,'events',eventId))
+      getDocs(collection(db,'systems',SYS,'events',eventId,'checkins')),
+      getDocs(collection(db,'systems',SYS,'events',eventId,'staff')),
+      getDoc(doc(db,'systems',SYS,'events',eventId))
     ]);
     // 換了活動就不要把舊活動的結果畫上去
     if(document.getElementById('statsEventSelect').value!==eventId)return;
@@ -2494,57 +2579,237 @@ function renderStatsContent(s){
 
 
 // ════════════════════════════
-// 帳戶管理（管理員限定）
+// 帳戶管理
 // ════════════════════════════
+// 兩種名單，文件 id 都是小寫 email，內容 { email, note, createdAt }：
+//   systems/{SYS}/admins/{email}  系統管理員（這個系統的管理員可以互相新增、移除）
+//   superAdmins/{email}           總管理員（只有總管理員能管理；另有寫死的 ADMIN_EMAIL）
+// 新增時如果有填密碼，會順便建立 Firebase 登入帳號；Email 已經有帳號就沿用原本的密碼。
+let accMode='sys'; // 'sys'：這個系統的系統管理員；'super'：總管理員
+function accCol(mode){ return mode==='super' ? collection(db,'superAdmins') : collection(db,'systems',SYS,'admins'); }
+
 async function loadAccountsSection(){
   const list=document.getElementById('accountsTableBody');
   list.innerHTML='<tr><td colspan="3" class="loading-cell">載入中...</td></tr>';
-  const snap=await getDocs(collection(db,'accounts'));
-  if(snap.empty){list.innerHTML='<tr><td colspan="3" class="loading-cell">尚無其他帳戶</td></tr>';return;}
-  list.innerHTML=snap.docs.map(d=>{
+  try{
+    const snap=await getDocs(accCol('sys'));
+    list.innerHTML=snap.empty?'<tr><td colspan="3" class="loading-cell">這個系統還沒有系統管理員（總管理員仍可進入）</td></tr>':accountRowsHtml(snap,'sys');
+  }catch(e){ list.innerHTML='<tr><td colspan="3" class="loading-cell" style="color:var(--red)">載入失敗：'+esc(e.message)+'</td></tr>'; }
+}
+function accountRowsHtml(snap, mode){
+  return snap.docs.map(d=>{
     const a=d.data();
-    return '<tr><td>'+esc(a.email)+'</td><td>'+esc(a.note||'-')+'</td>'
-      +'<td style="white-space:nowrap"><button class="btn btn-sm btn-danger" onclick="deleteAccount(\''+d.id+'\',\''+escJs(a.email)+'\')">刪除</button></td></tr>';
+    const me=d.id===MY_EMAIL?' <span class="badge">你</span>':'';
+    return '<tr><td>'+esc(a.email||d.id)+me+'</td><td>'+esc(a.note||'-')+'</td>'
+      +'<td style="white-space:nowrap"><button class="btn btn-sm btn-danger" onclick="deleteAccount(\''+escJs(d.id)+'\',\''+mode+'\')">移除</button></td></tr>';
   }).join('');
 }
-window.showAddAccount=function(){
+window.showAddAccount=function(mode){
+  accMode=mode==='super'?'super':'sys';
+  document.getElementById('accModalTitle').textContent=accMode==='super'?'新增總管理員':'新增系統管理員（'+SYS_NAME+'）';
   document.getElementById('newAccEmail').value='';
   document.getElementById('newAccPassword').value='';
   document.getElementById('newAccNote').value='';
   document.getElementById('accountModal').style.display='flex';
 }
+// 建立 Firebase 登入帳號：用第二個 App 實例建立，不影響目前的登入狀態
+// 回傳 'created'（新建）、'exists'（這個 Email 已經有帳號）、'skipped'（沒填密碼，不建立）
+async function createLoginIfNeeded(email,password){
+  if(!password) return 'skipped';
+  const {initializeApp:init2}=await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
+  const {getAuth:getAuth2,createUserWithEmailAndPassword:createUser2,signOut:signOut2}=await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+  const secAuth=getAuth2(init2(firebaseConfig,'sec_'+Date.now()));
+  try{
+    await createUser2(secAuth,email,password);
+    await signOut2(secAuth);
+    return 'created';
+  }catch(e){
+    if(e.code==='auth/email-already-in-use') return 'exists';
+    throw e;
+  }
+}
 window.saveAccount=async function(){
-  const email=document.getElementById('newAccEmail').value.trim();
+  const email=document.getElementById('newAccEmail').value.trim().toLowerCase();
   const password=document.getElementById('newAccPassword').value.trim();
   const note=document.getElementById('newAccNote').value.trim();
-  if(!email||!password){showToast('請填寫 Email 和密碼','error');return;}
-  if(password.length<6){showToast('密碼至少6碼','error');return;}
-  const btn=document.querySelector('#accountModal .btn-primary');
-  btn.textContent='建立中...'; btn.disabled=true;
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){showToast('請輸入正確的 Email','error');return;}
+  if(password&&password.length<6){showToast('密碼至少 6 碼','error');return;}
+  const mode=accMode;
+  const btn=document.getElementById('accSaveBtn');
+  btn.textContent='新增中...'; btn.disabled=true;
   try{
-    // 用第二個 Firebase App 實例建立帳號，不影響目前管理員登入
-    const {initializeApp:init2}=await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
-    const {getAuth:getAuth2,createUserWithEmailAndPassword:createUser2,signOut:signOut2}=await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
-    const secApp=init2(firebaseConfig,'sec_'+Date.now());
-    const secAuth=getAuth2(secApp);
-    const cred=await createUser2(secAuth,email,password);
-    await signOut2(secAuth);
-    // 文件 id 直接用 email：firestore.rules 的 isAdmin() 會用
-    // exists(accounts/{email}) 查白名單，這個帳號登入後才有管理權限
-    await setDoc(doc(db,'accounts',email),{email,note,createdAt:serverTimestamp()});
-    showToast('帳戶已建立');
+    const ref=doc(accCol(mode),email);
+    if((await getDoc(ref)).exists()){ showToast('這個 Email 已經在名單裡','error'); return; }
+    if(mode==='super'&&email===ADMIN_EMAIL){ showToast('這個 Email 本來就是永久總管理員','error'); return; }
+    const login=await createLoginIfNeeded(email,password);
+    await setDoc(ref,{email,note,createdAt:serverTimestamp()});
+    showToast(login==='created'?'已新增，並建立登入帳號'
+      :login==='exists'?'已新增（這個 Email 已有登入帳號，沿用原本的密碼）'
+      :'已新增（沒有填密碼，未建立登入帳號；若此 Email 還沒有帳號，請移除後填密碼重新新增）');
     closeModal('accountModal');
-    loadAccountsSection();
+    if(mode==='super') loadSuperAdmins(); else loadAccountsSection();
   }catch(e){
-    if(e.code==='auth/email-already-in-use') showToast('此 Email 已被使用','error');
-    else showToast('建立失敗：'+e.message,'error');
-  }finally{btn.textContent='建立帳戶';btn.disabled=false;}
+    showToast('新增失敗：'+e.message,'error');
+  }finally{ btn.textContent='新增'; btn.disabled=false; }
 }
-window.deleteAccount=async function(docId,email){
-  if(!confirm('確定刪除帳戶「'+email+'」？\n\n請注意：需另至 Firebase Console > Authentication 手動刪除 Auth 帳號。'))return;
-  await deleteDoc(doc(db,'accounts',docId));
-  showToast('記錄已刪除，請至 Firebase Console 刪除 Auth 帳號');
-  loadAccountsSection();
+window.deleteAccount=async function(docId,mode){
+  const self=docId===MY_EMAIL;
+  const what=mode==='super'?'總管理員':'這個系統的系統管理員';
+  if(!confirm('確定把「'+docId+'」從'+what+'名單移除？'
+    +(self?'\n\n⚠️ 這是你自己，移除後你會失去這個權限。':'')
+    +'\n\n移除只會取消權限，登入帳號本身要到 Firebase Console → Authentication 刪除。'))return;
+  try{
+    await deleteDoc(doc(accCol(mode),docId));
+    showToast('已移除');
+    // 移除自己：權限已經變了，重新整理回到總後台
+    if(self){ location.href='admin.html?hub=1'; return; }
+    if(mode==='super') loadSuperAdmins(); else loadAccountsSection();
+  }catch(e){ showToast('移除失敗：'+e.message,'error'); }
+}
+
+// ════════════════════════════
+// 總後台：選擇系統；總管理員另可管理系統、報名首頁設定、總管理員名單
+// ════════════════════════════
+function showHub(){
+  showScreen('hubScreen');
+  document.title='總後台｜活動報名系統';
+  document.getElementById('hubUserEmail').textContent=MY_EMAIL+(IS_SUPER?'（總管理員）':'（系統管理員）');
+  document.querySelectorAll('.super-only').forEach(el=>el.style.display=IS_SUPER?'':'none');
+  renderHubSystems();
+  if(IS_SUPER){ loadPlatformSettings(); loadSuperAdmins(); }
+}
+function renderHubSystems(){
+  const tbody=document.getElementById('hubSystemsBody');
+  const cols=IS_SUPER?5:4;
+  if(!MY_SYSTEMS.length){
+    tbody.innerHTML='<tr><td colspan="'+cols+'" class="loading-cell">'+(IS_SUPER?'還沒有任何系統，請按「＋ 新增系統」建立第一個系統':'沒有可進入的系統')+'</td></tr>';
+    return;
+  }
+  tbody.innerHTML=MY_SYSTEMS.map(x=>{
+    const id=escJs(x.id);
+    let html='<tr><td><strong>'+esc(x.name||x.id)+'</strong>'+(x.note?'<div style="font-size:.72rem;color:var(--muted)">'+esc(x.note)+'</div>':'')+'</td>'
+      +'<td class="sys-code">'+esc(x.id)+'</td>';
+    if(IS_SUPER) html+='<td><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem"><input type="checkbox"'+(x.listed?' checked':'')+' onchange="toggleSystemListed(\''+id+'\',this)"> 列出</label></td>';
+    html+='<td style="white-space:nowrap">'
+      +'<button class="btn btn-sm btn-ghost" onclick="copySysLink(\'runner.html\',\''+id+'\')">參加者網址</button> '
+      +'<button class="btn btn-sm btn-ghost" onclick="copySysLink(\'staff.html\',\''+id+'\')">工作人員網址</button></td>';
+    html+='<td style="white-space:nowrap"><button class="btn btn-sm btn-primary" onclick="enterSystem(\''+id+'\')">進入</button>';
+    if(IS_SUPER) html+=' <button class="btn btn-sm btn-ghost" onclick="showEditSystem(\''+id+'\')">編輯</button>'
+      +' <button class="btn btn-sm btn-danger" onclick="deleteSystem(\''+id+'\')">刪除</button>';
+    return html+'</td></tr>';
+  }).join('');
+}
+async function reloadHubSystems(){
+  await loadMyAccess(MY_EMAIL);
+  renderHubSystems();
+}
+
+// ── 報名首頁設定（platform/settings）──
+async function loadPlatformSettings(){
+  const cb=document.getElementById('hubShowSystemList');
+  try{
+    const snap=await getDoc(doc(db,'platform','settings'));
+    cb.checked=!!(snap.exists()&&snap.data().showSystemList===true);
+  }catch(e){ cb.checked=false; }
+}
+window.saveShowSystemList=async function(cb){
+  try{
+    await setDoc(doc(db,'platform','settings'),{showSystemList:cb.checked,updatedAt:serverTimestamp()},{merge:true});
+    showToast(cb.checked?'報名首頁會列出勾選「列出」的系統':'報名首頁改成顯示「請使用正確的報名網址」');
+  }catch(e){ cb.checked=!cb.checked; showToast('儲存失敗：'+e.message,'error'); }
+}
+window.toggleSystemListed=async function(sid,cb){
+  try{
+    await updateDoc(doc(db,'systems',sid),{listed:cb.checked,updatedAt:serverTimestamp()});
+    const x=MY_SYSTEMS.find(s=>s.id===sid); if(x)x.listed=cb.checked;
+    showToast(cb.checked?'已列在報名首頁':'已從報名首頁隱藏');
+  }catch(e){ cb.checked=!cb.checked; showToast('儲存失敗：'+e.message,'error'); }
+}
+
+// ── 總管理員名單 ──
+async function loadSuperAdmins(){
+  const tbody=document.getElementById('hubSuperBody');
+  tbody.innerHTML='<tr><td colspan="3" class="loading-cell">載入中...</td></tr>';
+  try{
+    const snap=await getDocs(collection(db,'superAdmins'));
+    const fixed='<tr><td>'+esc(ADMIN_EMAIL)+(ADMIN_EMAIL===MY_EMAIL?' <span class="badge">你</span>':'')+'</td><td style="color:var(--muted)">永久總管理員（寫在程式與資料庫規則裡，無法移除）</td><td></td></tr>';
+    tbody.innerHTML=fixed+accountRowsHtml(snap,'super');
+  }catch(e){ tbody.innerHTML='<tr><td colspan="3" class="loading-cell" style="color:var(--red)">載入失敗：'+esc(e.message)+'</td></tr>'; }
+}
+
+// ── 系統：新增、編輯、刪除（總管理員）──
+const SYS_CODE_RE=/^[a-z0-9][a-z0-9-]{1,29}$/;
+window.showAddSystem=function(){
+  document.getElementById('sysModalTitle').textContent='新增系統';
+  document.getElementById('sysEditing').value='';
+  document.getElementById('sysNameInput').value='';
+  const code=document.getElementById('sysCodeInput'); code.value=''; code.disabled=false;
+  document.getElementById('sysCodeHint').style.display='';
+  document.getElementById('sysNoteInput').value='';
+  document.getElementById('sysListedInput').checked=true;
+  document.getElementById('systemModal').style.display='flex';
+}
+window.showEditSystem=function(sid){
+  const x=MY_SYSTEMS.find(s=>s.id===sid); if(!x)return;
+  document.getElementById('sysModalTitle').textContent='編輯系統';
+  document.getElementById('sysEditing').value=sid;
+  document.getElementById('sysNameInput').value=x.name||'';
+  const code=document.getElementById('sysCodeInput'); code.value=sid; code.disabled=true;
+  document.getElementById('sysCodeHint').style.display='none';
+  document.getElementById('sysNoteInput').value=x.note||'';
+  document.getElementById('sysListedInput').checked=!!x.listed;
+  document.getElementById('systemModal').style.display='flex';
+}
+window.saveSystem=async function(){
+  const editing=document.getElementById('sysEditing').value;
+  const name=document.getElementById('sysNameInput').value.trim();
+  const code=document.getElementById('sysCodeInput').value.trim().toLowerCase();
+  const note=document.getElementById('sysNoteInput').value.trim();
+  const listed=document.getElementById('sysListedInput').checked;
+  if(!name){showToast('請填寫系統名稱','error');return;}
+  if(!editing&&!SYS_CODE_RE.test(code)){showToast('系統代碼格式不對：限小寫英文、數字、連字號，2～30 字，開頭不能是連字號','error');return;}
+  const btn=document.getElementById('sysSaveBtn'); btn.disabled=true;
+  try{
+    if(editing){
+      await updateDoc(doc(db,'systems',editing),{name,note,listed,updatedAt:serverTimestamp()});
+      showToast('已更新');
+    }else{
+      const ref=doc(db,'systems',code);
+      if((await getDoc(ref)).exists()){showToast('系統代碼「'+code+'」已經被使用','error');return;}
+      await setDoc(ref,{name,note,listed,createdAt:serverTimestamp()});
+      showToast('已建立系統「'+name+'」');
+    }
+    closeModal('systemModal');
+    await reloadHubSystems();
+  }catch(e){ showToast('儲存失敗：'+e.message,'error'); }
+  finally{ btn.disabled=false; }
+}
+// 刪除系統：只允許刪除還沒有活動、也沒有參加者資料的系統，避免誤刪整個系統的資料
+window.deleteSystem=async function(sid){
+  const x=MY_SYSTEMS.find(s=>s.id===sid); if(!x)return;
+  try{
+    const [ev,rn]=await Promise.all([
+      getDocs(query(collection(db,'systems',sid,'events'),limit(1))),
+      getDocs(query(collection(db,'systems',sid,'runners'),limit(1)))
+    ]);
+    if(!ev.empty||!rn.empty){
+      showToast('「'+(x.name||sid)+'」還有'+(!ev.empty?'活動':'參加者資料')+'，無法刪除。請先進入系統刪除所有活動與參加者資料。','error');
+      return;
+    }
+    if(!confirm('確定刪除系統「'+(x.name||sid)+'」（代碼 '+sid+'）？\n\n這個系統的管理員名單也會一併刪除，刪除後無法復原。'))return;
+    const [admins,cfg]=await Promise.all([
+      getDocs(collection(db,'systems',sid,'admins')),
+      getDocs(collection(db,'systems',sid,'config'))
+    ]);
+    const batch=writeBatch(db);
+    admins.docs.forEach(d=>batch.delete(d.ref));
+    cfg.docs.forEach(d=>batch.delete(d.ref));
+    batch.delete(doc(db,'systems',sid));
+    await batch.commit();
+    if(localStorage.getItem('lastSystem')===sid) localStorage.removeItem('lastSystem');
+    showToast('已刪除系統');
+    await reloadHubSystems();
+  }catch(e){ showToast('刪除失敗：'+e.message,'error'); }
 }
 
 // ════════════════════════════
@@ -2559,13 +2824,13 @@ async function loadStaffSection(){
 let lastLoadedStaffEventId=null;
 window.loadStaff=async function(){
   const eventId=document.getElementById('staffEventSelect').value;
-  if(eventId)localStorage.setItem('lastEventId',eventId); // 記住最後看的活動，切到其他分頁時自動帶入
+  if(eventId)localStorage.setItem(lastEventKey(),eventId); // 記住最後看的活動，切到其他分頁時自動帶入
   const sameStaffEvent=lastLoadedStaffEventId===eventId;
   const prevStaffChecked=sameStaffEvent?getCheckedIdSet('staffTableBody'):null;
   const tbody=document.getElementById('staffTableBody');
   if(!eventId){tbody.innerHTML='<tr><td colspan="9" class="loading-cell">請先選擇活動</td></tr>';return;}
   tbody.innerHTML='<tr><td colspan="9" class="loading-cell">載入中...</td></tr>';
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   curStaffCustomFields=evDoc.data()?.staffCustomFields||[];
   refreshSearchFieldOptions('staffSearchField',curStaffCustomFields);
   // 更新表頭
@@ -2579,7 +2844,7 @@ window.loadStaff=async function(){
     ).join('')
     +curStaffCustomFields.map(f=>'<th data-sort="customData.'+f.id+'" onclick="sortTable(\'staffTableBody\',\'customData.'+f.id+'\')">'+esc(f.label)+'<span class="sort-icon"> ⇅</span></th>').join('')
     +'<th>操作</th>';
-  const snap=await getDocs(collection(db,'events',eventId,'staff'));
+  const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'staff'));
   allStaff=snap.docs.map(d=>({id:d.id,...d.data()}));
   if(sameStaffEvent){ doStaffSearch(); restoreChecks('staffTableBody',prevStaffChecked); }
   else { renderStaff(getSorted('staffTableBody',allStaff)); restoreChecks('staffTableBody',null); }
@@ -2651,7 +2916,7 @@ window.showAddStaff=async function(){
   ['sName','sBirthday','sPhone','sEmail','sIdNumber','sNote'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   document.getElementById('sGender').value='';
   ['sBirthday','sPhone','sEmail','sIdNumber'].forEach(id=>setFieldError(id,false));
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   applyStaffFieldSettings(evDoc.data()?.staffFieldSettings||{});
   renderStaffCustomFields({});
   document.getElementById('staffModal').style.display='flex';
@@ -2671,7 +2936,7 @@ window.editStaff=async function(docId){
   document.getElementById('sNote').value=eDoc.note||'';
   ['sBirthday','sPhone','sEmail','sIdNumber'].forEach(id=>setFieldError(id,false));
   const eventId=document.getElementById('staffEventSelect').value;
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   applyStaffFieldSettings(evDoc.data()?.staffFieldSettings||{});
   renderStaffCustomFields(eDoc.customData||{});
   document.getElementById('staffModal').style.display='flex';
@@ -2679,14 +2944,14 @@ window.editStaff=async function(docId){
 window.deleteStaff=async function(docId,name){
   if(!confirm('確定刪除工作人員「'+name+'」？'))return;
   const eventId=document.getElementById('staffEventSelect').value;
-  await deleteDoc(doc(db,'events',eventId,'staff',docId));
+  await deleteDoc(doc(db,'systems',SYS,'events',eventId,'staff',docId));
   showToast('已刪除'); loadStaff();
 }
 // 駁回取消申請：只清除標記，報名資料不受影響
 window.rejectStaffCancelRequest=async function(docId){
   if(!confirm('確定駁回此筆取消申請？報名資料會繼續保留。'))return;
   const eventId=document.getElementById('staffEventSelect').value;
-  await updateDoc(doc(db,'events',eventId,'staff',docId),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()});
+  await updateDoc(doc(db,'systems',SYS,'events',eventId,'staff',docId),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()});
   showToast('已駁回申請'); loadStaff();
 }
 function renderStaffCustomFields(values){
@@ -2765,7 +3030,7 @@ window.saveStaff=async function(){
   const idNumber=document.getElementById('sIdNumber').value.trim();
   const note=document.getElementById('sNote').value.trim();
   // staffFieldSettings
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const sfs=evDoc.data()?.staffFieldSettings||{};
   const phone=(sfs.phone?.show!==false)?document.getElementById('sPhone').value.trim():'';
   const email=(sfs.email?.show!==false)?document.getElementById('sEmail').value.trim():'';
@@ -2803,14 +3068,14 @@ window.saveStaff=async function(){
   try{
     const data={name,gender,birthday,phone,email,idNumber,note,customData,updatedAt:serverTimestamp()};
     if(docId){
-      await updateDoc(doc(db,'events',eventId,'staff',docId),data);
+      await updateDoc(doc(db,'systems',SYS,'events',eventId,'staff',docId),data);
       showToast('已更新');
     }else{
       // 檢查同活動身分證是否已存在
-      const existing=await getDocs(query(collection(db,'events',eventId,'staff'),where('idNumber','==',idNumber)));
+      const existing=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'staff'),where('idNumber','==',idNumber)));
       if(!existing.empty){showToast('此身分證已報名過此活動','error');return;}
       data.createdAt=serverTimestamp();
-      await addDoc(collection(db,'events',eventId,'staff'),data);
+      await addDoc(collection(db,'systems',SYS,'events',eventId,'staff'),data);
       showToast('已新增');
     }
     closeModal('staffModal'); loadStaff();
@@ -2820,7 +3085,7 @@ window.exportStaff=async function(){
   const eventId=document.getElementById('staffEventSelect').value;
   if(!eventId){showToast('請先選擇活動','error');return;}
   if(!allStaff.length){showToast('無工作人員資料','error');return;}
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const evName=evDoc.data()?.name||'活動'; const evDate=evDoc.data()?.date||'';
   const customFields=evDoc.data()?.staffCustomFields||[];
   const sorted=getSorted('staffTableBody',allStaff);
@@ -3010,7 +3275,7 @@ window.batchDeleteRunners=async function(){
   if(!ids.length)return;
   // 檢查這些參加者是否有任何活動的報名記錄
   // 平行抓取參加者主檔，再用 'in' 批次查詢，每場活動一次查完所有選中的uniqueId，取代序列巢狀迴圈
-  const runnerDocs=await Promise.all(ids.map(id=>getDoc(doc(db,'runners',id))));
+  const runnerDocs=await Promise.all(ids.map(id=>getDoc(doc(db,'systems',SYS,'runners',id))));
   const uniqueIds=[]; const nameByUid={};
   runnerDocs.forEach(rDoc=>{
     if(rDoc.exists()&&rDoc.data().uniqueId){
@@ -3018,13 +3283,13 @@ window.batchDeleteRunners=async function(){
       uniqueIds.push(uid); nameByUid[uid]=rDoc.data().name;
     }
   });
-  const eventsSnap=await getDocs(collection(db,'events'));
+  const eventsSnap=await getDocs(collection(db,'systems',SYS,'events'));
   const uidChunks=[];
   for(let i=0;i<uniqueIds.length;i+=30)uidChunks.push(uniqueIds.slice(i,i+30));
   const blockedUidSet=new Set();
   await Promise.all(eventsSnap.docs.flatMap(evDoc=>
     uidChunks.map(chunk=>
-      getDocs(query(collection(db,'events',evDoc.id,'runners'),where('uniqueId','in',chunk)))
+      getDocs(query(collection(db,'systems',SYS,'events',evDoc.id,'runners'),where('uniqueId','in',chunk)))
         .then(snap=>snap.docs.forEach(d=>blockedUidSet.add(d.data().uniqueId)))
     )
   ));
@@ -3035,7 +3300,7 @@ window.batchDeleteRunners=async function(){
   }
   if(!confirm('確定刪除選取的 '+ids.length+' 筆參加者資料？'))return;
   const batch=writeBatch(db);
-  ids.forEach(id=>batch.delete(doc(db,'runners',id)));
+  ids.forEach(id=>batch.delete(doc(db,'systems',SYS,'runners',id)));
   await batch.commit();
   showToast('已刪除 '+ids.length+' 筆參加者資料');
   resetBatchUI('runnersTableBody','runnersSelectAll','runnersBatchDeleteBtn');
@@ -3050,7 +3315,7 @@ window.batchDeleteEntries=async function(){
   // 每筆會刪 2 個文件（報名記錄＋號碼預約標記），分批避開單一 batch 500 個操作的上限
   let batch=writeBatch(db);let opCount=0;
   for(const id of ids){
-    batch.delete(doc(db,'events',eventId,'runners',id));opCount++;
+    batch.delete(doc(db,'systems',SYS,'events',eventId,'runners',id));opCount++;
     const entryObj=allEntries.find(x=>x.docId===id||x.id===id);
     if(entryObj&&entryObj.bibNumber){deleteBibMarker(batch,eventId,entryObj.bibNumber);opCount++;}
     if(opCount>=400){await batch.commit();batch=writeBatch(db);opCount=0;}
@@ -3068,7 +3333,7 @@ window.batchRejectEntries=async function(){
   if(!ids.length||!eventId)return;
   if(!confirm('確定駁回選取的 '+ids.length+' 筆取消申請？報名資料會繼續保留。'))return;
   const batch=writeBatch(db);
-  ids.forEach(id=>batch.update(doc(db,'events',eventId,'runners',id),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()}));
+  ids.forEach(id=>batch.update(doc(db,'systems',SYS,'events',eventId,'runners',id),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()}));
   await batch.commit();
   showToast('已駁回 '+ids.length+' 筆取消申請');
   resetBatchUI('entriesTableBody','entriesSelectAll','entriesBatchDeleteBtn','entriesBatchRejectBtn');
@@ -3089,7 +3354,7 @@ window.batchDeleteStaff=async function(){
   if(!ids.length||!eventId)return;
   if(!confirm('確定刪除選取的 '+ids.length+' 筆工作人員資料？'))return;
   const batch=writeBatch(db);
-  ids.forEach(id=>batch.delete(doc(db,'events',eventId,'staff',id)));
+  ids.forEach(id=>batch.delete(doc(db,'systems',SYS,'events',eventId,'staff',id)));
   await batch.commit();
   showToast('已刪除 '+ids.length+' 筆工作人員資料');
   resetBatchUI('staffTableBody','staffSelectAll','staffBatchDeleteBtn','staffBatchRejectBtn');
@@ -3102,7 +3367,7 @@ window.batchRejectStaff=async function(){
   if(!ids.length||!eventId)return;
   if(!confirm('確定駁回選取的 '+ids.length+' 筆取消申請？報名資料會繼續保留。'))return;
   const batch=writeBatch(db);
-  ids.forEach(id=>batch.update(doc(db,'events',eventId,'staff',id),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()}));
+  ids.forEach(id=>batch.update(doc(db,'systems',SYS,'events',eventId,'staff',id),{cancelRequested:deleteField(),cancelRequestedAt:deleteField()}));
   await batch.commit();
   showToast('已駁回 '+ids.length+' 筆取消申請');
   resetBatchUI('staffTableBody','staffSelectAll','staffBatchDeleteBtn','staffBatchRejectBtn');
@@ -3464,8 +3729,8 @@ function certEdSamples(ev) {
 window.openCertEditor = async function (eventId) {
   const kind = 'award', K = CERT_KINDS[kind];
   const [evSnap, cSnap] = await Promise.all([
-    getDoc(doc(db, 'events', eventId)),
-    getDoc(doc(db, 'events', eventId, 'settings', K.settings)),
+    getDoc(doc(db,'systems',SYS,'events', eventId)),
+    getDoc(doc(db,'systems',SYS,'events', eventId, 'settings', K.settings)),
   ]);
   const ev = evSnap.data() || {};
   const c = cSnap.exists() ? cSnap.data() : null;
@@ -3497,7 +3762,7 @@ window.openCertEditor = async function (eventId) {
   certEdInitStage();
   // 讀取底圖
   if (tpl.bg.type === 'upload') {
-    const bgSnap = await getDoc(doc(db, 'events', eventId, 'settings', K.bg));
+    const bgSnap = await getDoc(doc(db,'systems',SYS,'events', eventId, 'settings', K.bg));
     if (bgSnap.exists()) {
       certEd.bgDataUrl = bgSnap.data().dataUrl || '';
       certEd.bgDims = { w: bgSnap.data().w || 0, h: bgSnap.data().h || 0 };
@@ -3703,9 +3968,9 @@ function certEdEnsureReal() {
 async function certEdLoadReal(ed) {
   const id = ed.eventId;
   const [entSnap, gSnap, ckSnap] = await Promise.all([
-    getDocs(collection(db, 'events', id, 'runners')),
-    getDocs(collection(db, 'events', id, 'groups')),
-    getDocs(collection(db, 'events', id, 'checkins')),
+    getDocs(collection(db,'systems',SYS,'events', id, 'runners')),
+    getDocs(collection(db,'systems',SYS,'events', id, 'groups')),
+    getDocs(collection(db,'systems',SYS,'events', id, 'checkins')),
   ]);
   const checkinIds = new Set(ckSnap.docs.map((d) => d.id)); // 報到記錄的文件 ID 就是參加者 uniqueId
   const groups = {}, gOrder = {};
@@ -4098,23 +4363,23 @@ window.saveCertEditor = async function () {
     const tpl = JSON.parse(JSON.stringify(ed.tpl));
     if (tpl.bg.type !== 'url') tpl.bg.url = '';
     const open = document.getElementById('certEdOpen').checked;
-    await setDoc(doc(db, 'events', ed.eventId, 'settings', ed.K.settings), { open, template: tpl, updatedAt: serverTimestamp() });
+    await setDoc(doc(db,'systems',SYS,'events', ed.eventId, 'settings', ed.K.settings), { open, template: tpl, updatedAt: serverTimestamp() });
     // 頒發名單：只寫有變動的報名記錄（報名資料沒載入成功就不動名單）
     if (ed.real) {
       const changed = ed.real.list.filter((x) => ed.picked.has(x.id) !== ed.origPicked.has(x.id));
       for (let i = 0; i < changed.length; i += 400) {
         const batch = writeBatch(db);
-        changed.slice(i, i + 400).forEach((x) => batch.update(doc(db, 'events', ed.eventId, 'runners', x.id), { award: ed.picked.has(x.id) ? true : deleteField() }));
+        changed.slice(i, i + 400).forEach((x) => batch.update(doc(db,'systems',SYS,'events', ed.eventId, 'runners', x.id), { award: ed.picked.has(x.id) ? true : deleteField() }));
         await batch.commit();
       }
       ed.origPicked = new Set(ed.picked);
     }
     if (bg.type === 'upload' && ed.bgDirty && ed.bgDataUrl) {
-      await setDoc(doc(db, 'events', ed.eventId, 'settings', ed.K.bg),
+      await setDoc(doc(db,'systems',SYS,'events', ed.eventId, 'settings', ed.K.bg),
         { dataUrl: ed.bgDataUrl, w: (ed.bgDims || {}).w || 0, h: (ed.bgDims || {}).h || 0, updatedAt: serverTimestamp() });
     } else if ((bg.type === 'preset' || bg.type === 'url') && ed.bgDataUrl) {
       // 改用內建底圖或網址：上傳的底圖用不到了，刪掉不佔空間
-      await deleteDoc(doc(db, 'events', ed.eventId, 'settings', ed.K.bg)).catch(() => {});
+      await deleteDoc(doc(db,'systems',SYS,'events', ed.eventId, 'settings', ed.K.bg)).catch(() => {});
     }
     showToast('已儲存' + ed.K.label + '設定');
     closeCertEditor(); loadEvents();
@@ -4197,6 +4462,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .btn-sm{padding:5px 10px;font-size:.78rem;border-radius:6px;}
 .btn-full{width:100%;justify-content:center;padding:13px;}
 #appScreen{display:none;min-height:100vh;}
+/* 總後台（選擇系統、管理系統與總管理員） */
+#hubScreen{display:none;min-height:100vh;padding:32px 16px 60px;}
+.hub-wrap{max-width:1000px;margin:0 auto;}
+.hub-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:28px;}
+.hub-head .hub-title{font-size:1.3rem;font-weight:900;}
+.hub-head .hub-sub{font-size:.8rem;color:var(--muted);}
+.hub-block{margin-bottom:32px;}
+.hub-block-title{font-size:1rem;font-weight:800;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.sys-code{font-family:var(--mono);font-size:.8rem;color:var(--muted);}
+.sys-name-badge{font-size:.72rem;color:var(--accent);font-weight:700;margin-top:6px;word-break:break-all;}
 .sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;}
 .sidebar-logo{padding:24px 20px 16px;border-bottom:1px solid var(--border);}
 .sidebar-logo-icon{font-size:1.5rem;}
@@ -4343,12 +4618,58 @@ th[data-sort]:hover{color:var(--accent);}
   </div>
 </div>
 
+<!-- 總後台：登入後選擇系統；總管理員另可管理系統、報名首頁設定、總管理員名單 -->
+<div id="hubScreen">
+  <div class="hub-wrap">
+    <div class="hub-head">
+      <div style="font-size:2rem">🎫</div>
+      <div style="flex:1;min-width:200px">
+        <div class="hub-title">活動報名系統 · 總後台</div>
+        <div class="hub-sub" id="hubUserEmail"></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="showAbout()">ℹ️ 關於</button>
+      <button class="btn btn-ghost btn-sm" onclick="doLogout()">登出</button>
+    </div>
+
+    <div class="hub-block">
+      <div class="hub-block-title">
+        <span>系統</span>
+        <button class="btn btn-primary super-only" onclick="showAddSystem()">＋ 新增系統</button>
+      </div>
+      <div class="csv-hint">每個系統各自獨立：自己的活動、參加者資料、系統管理員。選擇要進入的系統；之後可從側邊欄的「⇄ 切換系統／總後台」回到這裡。</div>
+      <div class="table-wrap"><table style="min-width:0;width:100%"><thead><tr><th>系統名稱</th><th>代碼</th><th class="super-only">報名首頁</th><th>報名網址</th><th>操作</th></tr></thead>
+        <tbody id="hubSystemsBody"><tr><td colspan="5" class="loading-cell">載入中...</td></tr></tbody></table></div>
+    </div>
+
+    <div class="hub-block super-only">
+      <div class="hub-block-title"><span>報名首頁設定</span></div>
+      <div class="csv-hint">報名首頁＝沒帶系統代碼的報名網址（例如只輸入 runner.html）。</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.88rem;cursor:pointer">
+        <input type="checkbox" id="hubShowSystemList" onchange="saveShowSystemList(this)">
+        列出系統讓人選擇（只列出上方勾選「列出」的系統）
+      </label>
+      <div style="font-size:.75rem;color:var(--muted);margin-top:6px">不勾選時，報名首頁只顯示「請使用正確的報名網址」，不會透露有哪些系統。</div>
+    </div>
+
+    <div class="hub-block super-only">
+      <div class="hub-block-title">
+        <span>總管理員</span>
+        <button class="btn btn-primary" onclick="showAddAccount('super')">＋ 新增總管理員</button>
+      </div>
+      <div class="csv-hint">總管理員可以進入所有系統，並管理系統、報名首頁設定與總管理員名單。各系統的系統管理員請進入該系統，在「帳戶管理」新增。</div>
+      <div class="table-wrap"><table style="min-width:0;width:100%"><thead><tr><th>Email</th><th>備註</th><th>操作</th></tr></thead>
+        <tbody id="hubSuperBody"><tr><td colspan="3" class="loading-cell">載入中...</td></tr></tbody></table></div>
+    </div>
+  </div>
+</div>
+
 <div id="appScreen">
   <div class="sidebar">
     <div class="sidebar-logo">
       <div class="sidebar-logo-icon">🎫</div>
-      <div class="sidebar-logo-text">活動報名系統</div>
+      <div class="sidebar-logo-text" id="sideSysName">活動報名系統</div>
       <div class="sidebar-logo-sub">管理後台</div>
+      <a href="admin.html?hub=1" class="sys-name-badge" style="display:inline-block;text-decoration:none">⇄ 切換系統／總後台</a>
     </div>
     <nav class="nav">
       <div class="nav-item active" data-nav="events" onclick="showSection('events')"><span class="nav-icon">📅</span><span>活動管理</span></div>
@@ -4356,7 +4677,7 @@ th[data-sort]:hover{color:var(--accent);}
       <div class="nav-item" data-nav="entries" onclick="showSection('entries')"><span class="nav-icon">📝</span><span>報名管理</span></div>
       <div class="nav-item" data-nav="staff" onclick="showSection('staff')"><span class="nav-icon">🦺</span><span>工作人員</span></div>
       <div class="nav-item" data-nav="stats" onclick="showSection('stats')"><span class="nav-icon">📈</span><span>統計分析</span></div>
-      <div class="nav-item admin-only" data-nav="accounts" onclick="showSection('accounts')" style="display:none"><span class="nav-icon">👤</span><span>帳戶管理</span></div>
+      <div class="nav-item" data-nav="accounts" onclick="showSection('accounts')"><span class="nav-icon">👤</span><span>帳戶管理</span></div>
       <div class="nav-item" data-nav="about" onclick="showAbout()"><span class="nav-icon">ℹ️</span><span>關於</span></div>
     </nav>
     <div class="sidebar-footer">
@@ -4366,8 +4687,9 @@ th[data-sort]:hover{color:var(--accent);}
   </div>
 
   <div class="top-bar">
-    <div class="top-bar-title">📝 活動報名</div>
+    <div class="top-bar-title" id="topSysName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45vw">📝 活動報名</div>
     <div class="top-bar-right">
+      <a href="admin.html?hub=1" class="btn btn-ghost btn-sm" style="text-decoration:none">⇄ 系統</a>
       <span id="topUserEmail" style="overflow:hidden;text-overflow:ellipsis;max-width:120px;display:inline-block"></span>
       <button class="btn btn-ghost btn-sm" onclick="doLogout()">登出</button>
     </div>
@@ -4379,7 +4701,7 @@ th[data-sort]:hover{color:var(--accent);}
     <div class="bottom-nav-item" data-nav="entries" onclick="showSection('entries')"><span class="nav-icon">📝</span><span>報名</span></div>
     <div class="bottom-nav-item" data-nav="staff" onclick="showSection('staff')"><span class="nav-icon">🦺</span><span>工作</span></div>
     <div class="bottom-nav-item" data-nav="stats" onclick="showSection('stats')"><span class="nav-icon">📈</span><span>統計</span></div>
-    <div class="bottom-nav-item admin-only" data-nav="accounts" onclick="showSection('accounts')" style="display:none"><span class="nav-icon">👤</span><span>帳戶</span></div>
+    <div class="bottom-nav-item" data-nav="accounts" onclick="showSection('accounts')"><span class="nav-icon">👤</span><span>帳戶</span></div>
     <div class="bottom-nav-item" data-nav="about" onclick="showAbout()"><span class="nav-icon">ℹ️</span><span>關於</span></div>
   </div>
 
@@ -4433,6 +4755,7 @@ th[data-sort]:hover{color:var(--accent);}
         <div class="section-title">活動管理</div>
         <button class="btn btn-primary" onclick="showAddEvent()">＋ 新增活動</button>
       </div>
+      <div class="csv-hint" id="sysLinksHint"></div>
       <div class="table-wrap"><table><thead><tr><th>活動名稱</th><th>日期</th><th>組別</th><th>狀態</th><th>操作</th></tr></thead><tbody id="eventsTableBody"><tr><td colspan="5" class="loading-cell">載入中...</td></tr></tbody></table></div>
     </div>
 
@@ -4531,9 +4854,9 @@ th[data-sort]:hover{color:var(--accent);}
     <div id="sec-accounts" class="section">
       <div class="section-header">
         <div class="section-title">帳戶管理</div>
-        <button class="btn btn-primary" onclick="showAddAccount()">＋ 新增帳戶</button>
+        <button class="btn btn-primary" onclick="showAddAccount('sys')">＋ 新增系統管理員</button>
       </div>
-      <div class="csv-hint">此頁面僅管理員可見。新增的帳戶可登入管理後台，擁有與管理員相同權限，但無法進入此帳戶管理頁面。刪除帳戶後請至 Firebase Console 確認 Auth 端已移除。</div>
+      <div class="csv-hint">這裡列出<strong>這個系統</strong>的系統管理員，他們可以使用這個系統的所有功能，也可以新增、移除其他系統管理員。同一個 Email 可以同時是多個系統的管理員。<br>總管理員可進入所有系統，不會列在這裡（在總後台管理）。移除管理員只會取消權限，登入帳號本身要到 Firebase Console → Authentication 刪除。</div>
       <div class="table-wrap"><table><thead><tr><th>Email</th><th>備註</th><th>操作</th></tr></thead><tbody id="accountsTableBody"><tr><td colspan="3" class="loading-cell">載入中...</td></tr></tbody></table></div>
     </div>
 
@@ -5069,11 +5392,26 @@ th[data-sort]:hover{color:var(--accent);}
 
 <div id="accountModal" class="modal-overlay">
   <div class="modal">
-    <div class="modal-title">新增帳戶</div>
+    <div class="modal-title" id="accModalTitle">新增系統管理員</div>
     <div class="input-group"><label>Email <span class="required-star">*</span></label><input id="newAccEmail" type="email" class="input" placeholder="user@example.com"></div>
-    <div class="input-group"><label>預設密碼 <span class="required-star">*</span>（至少6碼）</label><input id="newAccPassword" type="text" class="input" placeholder="預設密碼"></div>
-    <div class="input-group"><label>備註</label><input id="newAccNote" type="text" class="input" placeholder="例：場地負責人"></div>
-    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('accountModal')">取消</button><button class="btn btn-primary" onclick="saveAccount()">建立帳戶</button></div>
+    <div class="input-group"><label>登入密碼（新帳號才需要，至少 6 碼）</label><input id="newAccPassword" type="text" class="input" placeholder="已有登入帳號的 Email 請留空"></div>
+    <div class="input-group"><label>備註</label><input id="newAccNote" type="text" class="input" placeholder="例：書法班老師"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('accountModal')">取消</button><button class="btn btn-primary" id="accSaveBtn" onclick="saveAccount()">新增</button></div>
+  </div>
+</div>
+
+<!-- 系統 Modal（總管理員：新增／編輯系統） -->
+<div id="systemModal" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-title" id="sysModalTitle">新增系統</div>
+    <input type="hidden" id="sysEditing">
+    <div class="input-group"><label>系統名稱 <span class="required-star">*</span></label><input id="sysNameInput" type="text" class="input" placeholder="例：書法教室"></div>
+    <div class="input-group"><label>系統代碼 <span class="required-star">*</span></label><input id="sysCodeInput" type="text" class="input" placeholder="例：calligraphy" autocomplete="off" style="font-family:var(--mono)">
+      <div style="font-size:.72rem;color:var(--muted);margin-top:6px" id="sysCodeHint">用在報名網址（例如 runner.html?s=calligraphy）。限小寫英文、數字、連字號「-」，2～30 字，開頭不能是連字號。<strong>建立後不能修改。</strong></div></div>
+    <div class="input-group"><label>備註</label><input id="sysNoteInput" type="text" class="input" placeholder="只有管理員看得到"></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="sysListedInput" checked> 列在報名首頁的系統清單</label>
+    <div style="font-size:.72rem;color:var(--muted);margin-bottom:12px">報名首頁＝沒帶系統代碼的報名網址。總後台的「報名首頁設定」開啟時才會列出。</div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('systemModal')">取消</button><button class="btn btn-primary" id="sysSaveBtn" onclick="saveSystem()">儲存</button></div>
   </div>
 </div>
 

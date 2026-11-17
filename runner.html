@@ -72,6 +72,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   #certCanvas{max-width:100vw;max-height:100vh;border-radius:0;}
   /* 紙張方向依獎狀是橫式或直式，列印前由 printAward() 動態設定 */
 }
+body.no-sys .tabs, body.no-sys .page{display:none!important;}
+.sys-pick{display:block;padding:14px 16px;margin-top:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface2);color:var(--text);text-decoration:none;font-weight:600;}
+.sys-pick:hover{border-color:var(--accent);}
 </style>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 </head>
@@ -80,9 +83,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div class="wrap">
   <div class="header">
     <div class="logo">🎫</div>
-    <div class="title">活動報名系統</div>
+    <div class="title" id="sysName">活動報名系統</div>
     <div class="sub">參加者服務</div>
   </div>
+
+  <div id="sysGate" class="card" style="display:none"></div>
 
   <div class="tabs">
     <div class="tab active" data-page="signup" onclick="showPage('signup')">📝 報名</div>
@@ -160,6 +165,16 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 // Cloud Functions（報名交易處理部署在 asia-east1 台灣區域）
 const functions = getFunctions(app, 'asia-east1');
+
+// ── 報名系統（網址 ?s=系統代碼）──
+// 每個系統各自獨立：自己的活動、參加者資料。這個頁面只顯示網址指定的系統。
+const SYS=(new URLSearchParams(location.search).get('s')||'').trim().toLowerCase();
+const SYS_RE=/^[a-z0-9][a-z0-9-]{1,29}$/;
+// 呼叫後端時自動帶上系統代碼
+function callFn(name){
+  const fn=httpsCallable(functions,name);
+  return data=>fn({...data,systemId:SYS});
+}
 
 // ── 匿名登入（使用者無感）──
 // firestore.rules 現在要求所有讀寫至少要有登入身分，這裡在背景自動
@@ -404,12 +419,12 @@ async function initSignupPage(){
   const content=document.getElementById('signupContent');
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
   // 取得所有活動，由前端做開放判斷
-  const snap=await getDocs(query(collection(db,'events'), orderBy('createdAt','desc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
   const openEvents=[];
   for(const d of snap.docs){
     const ev={id:d.id,...d.data()};
     // 取目前報名人數：用聚合計數查詢，只回傳數字、不下載整個報名集合
-    const countSnap=await getCountFromServer(collection(db,'events',d.id,'runners'));
+    const countSnap=await getCountFromServer(collection(db,'systems',SYS,'events',d.id,'runners'));
     ev._entryCount = countSnap.data().count;
     if(isRunnerRegOpen(ev, ev._entryCount)) openEvents.push(ev);
   }
@@ -443,7 +458,7 @@ async function selectSignupEvent(eventId, keepWrapper){
   curSignupEvent=signupEvents.find(e=>e.id===eventId);
   lastSignupEventId=eventId;
   curSignupCustomFields=curSignupEvent.customFields||[];
-  const gSnap=await getDocs(query(collection(db,'events',eventId,'groups'),orderBy('createdAt','asc')));
+  const gSnap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'groups'),orderBy('createdAt','asc')));
   const groupDocs=sortGroupDocs(gSnap.docs).map(d=>({id:d.id,...d.data()}));
   // 組別的關聯鍵一律用 ID，名稱只是顯示用、之後改名不會弄亂已送出的報名資料
   window._signupGroupMap={};
@@ -702,7 +717,7 @@ window.checkBibAvailable=async function(){
   }
   // 只查這一個號碼有沒有被用過，不下載整個報名集合
   const padded=String(n).padStart(pad,'0');
-  const snap=await getDocs(query(collection(db,'events',curSignupEvent.id,'runners'),where('bibNumber','==',padded)));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events',curSignupEvent.id,'runners'),where('bibNumber','==',padded)));
   const dup=!snap.empty;
   if(dup){
     el.style.borderColor='var(--red)';
@@ -723,7 +738,7 @@ let availBibCursors={}; // panelId -> 目前批次起始號碼
 const AVAIL_BIB_BATCH=30;
 async function getUsedBibSetFor(eventId){
   if(availBibSetByEvent[eventId]) return availBibSetByEvent[eventId];
-  const snap=await getDocs(collection(db,'events',eventId,'runners'));
+  const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const set=new Set();
   snap.docs.forEach(d=>{const b=d.data().bibNumber; if(b)set.add(b);});
   availBibSetByEvent[eventId]=set;
@@ -1003,7 +1018,7 @@ window.submitSignup=async function(){
     }
     // 組別名額
     if(g.groupCapacity>0){
-      const capSnap=await getCountFromServer(query(collection(db,'events',curSignupEvent.id,'runners'),where('groupId','==',group)));
+      const capSnap=await getCountFromServer(query(collection(db,'systems',SYS,'events',curSignupEvent.id,'runners'),where('groupId','==',group)));
       if(capSnap.data().count>=g.groupCapacity){failGroup('此組別已額滿（'+g.groupCapacity+'人）');return;}
     }
   }
@@ -1059,7 +1074,7 @@ window.submitSignup=async function(){
   }
   // 若填了號碼，先做最終重複確認
   if(customBib){
-    const dupSnap=await getDocs(query(collection(db,'events',curSignupEvent.id,'runners'),where('bibNumber','==',customBib)));
+    const dupSnap=await getDocs(query(collection(db,'systems',SYS,'events',curSignupEvent.id,'runners'),where('bibNumber','==',customBib)));
     if(!dupSnap.empty){
       showToast('號碼 '+customBib+' 已被使用，請重新填寫','error');
       if(customBibEl){customBibEl.style.borderColor='var(--red)';}
@@ -1079,7 +1094,7 @@ window.submitSignup=async function(){
     // 上面的前端檢查只是使用體驗的預檢，把關以伺服器為準。
     // ══════════════════════════════════════════════════════════
     if(!currentTurnstileToken){showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error');btn.textContent='送出報名';btn.disabled=false;return;}
-    const runnerSignupFn=httpsCallable(functions,'runnerSignup');
+    const runnerSignupFn=callFn('runnerSignup');
     const payload={
       eventId,groupId:group,name,gender,birthday,phone,email,idNumber,note,customData,
       inviteCode:document.getElementById('suInviteCode')?.value.trim()||'',
@@ -1248,7 +1263,7 @@ let lastStatusEventId=null; // 記住上次選的活動
 async function initStatusPage(){
   const content=document.getElementById('statusContent');
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
-  const snap=await getDocs(query(collection(db,'events'),orderBy('createdAt','desc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc')));
   allStatusEvents=snap.docs.map(d=>({id:d.id,...d.data()}));
   if(!allStatusEvents.length){
     content.innerHTML='<div class="card"><div class="loading-cell">目前沒有活動資料</div></div>';
@@ -1331,7 +1346,7 @@ window.doStatusQuery=async function(){
   const ev=curStatusEvent;
   let res;
   try{
-    res=(await httpsCallable(functions,'runnerStatus')({eventId,bib,name,gender,birthday})).data;
+    res=(await callFn('runnerStatus')({eventId,bib,name,gender,birthday})).data;
   }catch(err){
     result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">查詢失敗：'+esc(err.message)+'</div></div>';
     return;
@@ -1402,7 +1417,7 @@ window.saveStatusInfoPng=function(cardId, entryDocId){
 window.withdrawCancelRequest=async function(eventId, entryDocId, uniqueId, cardId){
   try{
     // 透過 Cloud Function 執行（伺服器端重新驗證身分）
-    await httpsCallable(functions,'runnerAction')({eventId,entryDocId,action:'withdraw',credentials:statusCred});
+    await callFn('runnerAction')({eventId,entryDocId,action:'withdraw',credentials:statusCred});
     const actions=document.getElementById(cardId+'_actions');
     if(actions) actions.outerHTML='<div id="'+cardId+'_actions">'
       +'<div id="'+cardId+'_edit" style="margin-top:12px"></div>'
@@ -1421,7 +1436,7 @@ window.requestCancelEntry=async function(eventId, entryDocId, cardId){
   if(!confirm('確定要送出取消報名申請？\n（送出後請等待主辦方審核確認，不會立即取消，個人資料也不會被刪除）'))return;
   try{
     // 透過 Cloud Function 執行（伺服器端重新驗證身分）
-    await httpsCallable(functions,'runnerAction')({eventId,entryDocId,action:'cancel',credentials:statusCred});
+    await callFn('runnerAction')({eventId,entryDocId,action:'cancel',credentials:statusCred});
     const actions=document.getElementById(cardId+'_actions');
     if(actions) actions.outerHTML='<div style="margin-top:12px;padding:10px 12px;background:var(--surface2);border-radius:8px;font-size:.82rem;color:var(--muted)">⏳ 已送出取消申請，請等待主辦方確認</div>';
     showToast('已送出取消申請');
@@ -1459,7 +1474,7 @@ window.checkEditBibAvailable=async function(eventId, entryDocId, cardId){
       return;
     }
   }
-  const snap=await getDocs(query(collection(db,'events',eventId,'runners'),where('bibNumber','==',padded)));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('bibNumber','==',padded)));
   const dup=snap.docs.some(d=>d.id!==entryDocId);
   if(dup){
     el.style.borderColor='var(--red)';
@@ -1482,10 +1497,10 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   if(!cached){showToast('資料已過期，請重新查詢','error');box.innerHTML='';box.dataset.open='';return;}
   const e=cached.entry;
   const r=cached.profile;
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const customFields=evDoc.data()?.customFields||[];
   const evDate=evDoc.data()?.date||'';
-  const gSnap=await getDocs(query(collection(db,'events',eventId,'groups'),orderBy('createdAt','asc')));
+  const gSnap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'groups'),orderBy('createdAt','asc')));
   const groupList=sortGroupDocs(gSnap.docs).map(d=>({id:d.id,...d.data()}));
   const groupMap={}; groupList.forEach(g=>{groupMap[g.id]=g;});
   const customData=e.customData||{};
@@ -1695,7 +1710,7 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
     }
     // 真的要換號碼的話，送出前再確認一次沒被搶走（跟報名表單同一套邏輯，失焦檢查只是輔助不是保證）
     if(padded!==oldBib){
-      const dupSnap=await getDocs(query(collection(db,'events',eventId,'runners'),where('bibNumber','==',padded)));
+      const dupSnap=await getDocs(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('bibNumber','==',padded)));
       if(dupSnap.docs.some(d=>d.id!==entryDocId)){
         showToast('號碼 '+padded+' 已被使用，請重新填寫','error');
         if(bibEl)bibEl.style.borderColor='var(--red)';
@@ -1750,7 +1765,7 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
       // 名額只在「真的換到不同組別」時才檢查，避免原本就在額滿組別的人被自己卡住
       const origGroupId=statusCache[entryDocId]?.entry?.groupId;
       if(groupId!==origGroupId&&g0.groupCapacity>0){
-        const capSnap=await getCountFromServer(query(collection(db,'events',eventId,'runners'),where('groupId','==',groupId)));
+        const capSnap=await getCountFromServer(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('groupId','==',groupId)));
         if(capSnap.data().count>=g0.groupCapacity){failGroup('此組別已額滿（'+g0.groupCapacity+'人）');return;}
       }
     }
@@ -1800,7 +1815,7 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
         :null),
       matchDecision:null,matchDocId:''
     };
-    let res=(await httpsCallable(functions,'runnerAction')(callPayload)).data;
+    let res=(await callFn('runnerAction')(callPayload)).data;
     // 身分欄位（姓名/性別/生日/手機/Email/身分證）改了之後跟別人的資料模糊相符：
     // 顯示確認對話框，讓使用者確認是否為同一人（若真的是同一人，伺服器會直接拒絕這次修改）
     if(res.status==='needs-confirmation'){
@@ -1809,7 +1824,7 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
         showRefillButton:false,
         warningText:'⚠️ 若選「同一人」，這次修改會被拒絕（身分資料不能跟別人重複）；選「非同一人」才會繼續送出修改。'
       });
-      res=(await httpsCallable(functions,'runnerAction')({...callPayload,matchDecision:choice,matchDocId:res.matchDocId})).data;
+      res=(await callFn('runnerAction')({...callPayload,matchDecision:choice,matchDocId:res.matchDocId})).data;
     }
     // 憑證與快取更新（姓名/性別/生日可能被改了，之後的動作要用新值驗證）
     statusCred=res.updatedCredentials||statusCred;
@@ -1839,7 +1854,7 @@ let lookupInited=false;
 async function initLookupPage(){
   if(lookupInited)return; lookupInited=true;
   const select=document.getElementById('lookupEventSelect');
-  const snap=await getDocs(query(collection(db,'events'),orderBy('createdAt','desc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc')));
   select.innerHTML='<option value="">請選擇活動...</option>';
   snap.docs.forEach(d=>{
     const ev=d.data(); const o=document.createElement('option');
@@ -1870,7 +1885,7 @@ window.doLookup=async function(){
   // 相符後，只回傳報名記錄的基本資料（姓名/編號/組別/是否申請取消中/是否在獎狀頒發名單上）。
   let res;
   try{
-    res=(await httpsCallable(functions,'runnerLookup')({
+    res=(await callFn('runnerLookup')({
       eventId:isAll?'all':eventId, uid, idNumber:idNum, birthday
     })).data;
   }catch(err){
@@ -2248,7 +2263,7 @@ function loadAwardSettings(eventId){
   if(!awardSettingsCache[eventId]){
     awardSettingsCache[eventId]=(async()=>{
       let c=null;
-      try{ const snap=await getDoc(doc(db,'events',eventId,'settings',CERT_KINDS.award.settings)); c=snap.exists()?snap.data():null; }catch(e){}
+      try{ const snap=await getDoc(doc(db,'systems',SYS,'events',eventId,'settings',CERT_KINDS.award.settings)); c=snap.exists()?snap.data():null; }catch(e){}
       return { open: !!(c && c.open), template: (c && c.template) || certDefaultTemplate('award') };
     })();
   }
@@ -2263,7 +2278,7 @@ function loadAwardBg(eventId, tpl){
     awardBgCache[key]=(async()=>{
       try{
         if(bg.type==='upload'){
-          const snap=await getDoc(doc(db,'events',eventId,'settings',CERT_KINDS.award.bg));
+          const snap=await getDoc(doc(db,'systems',SYS,'events',eventId,'settings',CERT_KINDS.award.bg));
           return snap.exists()?await certLoadImage(snap.data().dataUrl):null;
         }
         if(bg.type==='url'&&bg.url) return await certLoadImage(bg.url);
@@ -2282,15 +2297,15 @@ async function buildAwardInfo(a, tpl){
   if(!e.groupId) return info;
   try{
     if(uses('組別距離')){
-      const g=await getDoc(doc(db,'events',a.eventId,'groups',e.groupId));
+      const g=await getDoc(doc(db,'systems',SYS,'events',a.eventId,'groups',e.groupId));
       if(g.exists()) info.distanceText=groupDistText(g.data().distance,g.data().distanceUnit);
     }
     if(uses('組別報名人數')||uses('組別報到人數')){
-      const entSnap=await getDocs(query(collection(db,'events',a.eventId,'runners'),where('groupId','==',e.groupId)));
+      const entSnap=await getDocs(query(collection(db,'systems',SYS,'events',a.eventId,'runners'),where('groupId','==',e.groupId)));
       const uids=entSnap.docs.map(d=>d.data().uniqueId).filter(Boolean);
       info.entrants=uids.length;
       if(uses('組別報到人數')){
-        const ckSnap=await getDocs(collection(db,'events',a.eventId,'checkins'));
+        const ckSnap=await getDocs(collection(db,'systems',SYS,'events',a.eventId,'checkins'));
         const ck=new Set(ckSnap.docs.map(d=>d.id));
         info.checkins=uids.filter(u=>ck.has(u)).length;
       }
@@ -2349,7 +2364,46 @@ window.exportAwardImage=function(){
 
 
 // 初始化第一個分頁（先完成匿名登入再載入資料）
-ensureAuth().then(()=>initSignupPage());
+// 先確認報名系統，再載入報名頁
+ensureAuth().then(initSystem).then(ok=>{ if(ok) initSignupPage(); });
+
+// ── 確認網址指定的系統 ──
+// 有帶系統代碼：讀出系統名稱顯示在頁首。
+// 沒帶代碼：依總後台的設定，列出開放的系統讓人選，或請對方確認網址。
+async function initSystem(){
+  if(SYS){
+    let snap=null;
+    if(SYS_RE.test(SYS)) snap=await getDoc(doc(db,'systems',SYS)).catch(()=>null);
+    if(snap&&snap.exists()){
+      const name=snap.data().name||SYS;
+      document.getElementById('sysName').textContent=name;
+      document.title=name+'｜參加者服務';
+      return true;
+    }
+    showSysGate('<h3 style="margin-bottom:8px">找不到這個報名系統</h3><p style="color:var(--muted);font-size:.88rem">請確認報名網址是否正確。</p>');
+    return false;
+  }
+  let list=[];
+  try{
+    const st=await getDoc(doc(db,'platform','settings'));
+    if(st.exists()&&st.data().showSystemList===true){
+      const snap=await getDocs(query(collection(db,'systems'),where('listed','==',true)));
+      list=snap.docs.map(d=>({id:d.id,name:d.data().name||d.id})).sort((a,b)=>a.name.localeCompare(b.name,'zh-Hant'));
+    }
+  }catch(e){ console.warn('系統清單讀取失敗',e); }
+  if(list.length){
+    showSysGate('<h3 style="margin-bottom:4px">請選擇報名系統</h3>'
+      +list.map(x=>'<a class="sys-pick" href="'+location.pathname+'?s='+encodeURIComponent(x.id)+'">'+esc(x.name)+'</a>').join(''));
+  }else{
+    showSysGate('<h3 style="margin-bottom:8px">請使用正確的報名網址</h3><p style="color:var(--muted);font-size:.88rem">這個網址沒有指定報名系統，請向主辦單位確認報名網址。</p>');
+  }
+  return false;
+}
+function showSysGate(html){
+  document.body.classList.add('no-sys');
+  const g=document.getElementById('sysGate');
+  g.innerHTML=html; g.style.display='block';
+}
 
 // ── 關於 ──
 const ABOUT_INFO = {

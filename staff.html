@@ -50,6 +50,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .about-row .about-value{flex:1;color:var(--text);word-break:break-all;}
 .about-row .about-value a{color:var(--accent);text-decoration:underline;}
 .about-divider{height:1px;background:var(--border);margin:14px 0;}
+body.no-sys .tabs, body.no-sys .page{display:none!important;}
+.sys-pick{display:block;padding:14px 16px;margin-top:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface2);color:var(--text);text-decoration:none;font-weight:600;}
+.sys-pick:hover{border-color:var(--accent);}
 </style>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 </head>
@@ -57,9 +60,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div class="wrap">
   <div class="header">
     <div class="logo">🦺</div>
-    <div class="title">活動報名系統</div>
+    <div class="title" id="sysName">活動報名系統</div>
     <div class="sub">工作人員服務</div>
   </div>
+
+  <div id="sysGate" class="card" style="display:none"></div>
 
   <div class="tabs">
     <div class="tab active" data-page="signup" onclick="showPage('signup')">📝 報名</div>
@@ -111,6 +116,16 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 // Cloud Functions（工作人員報名/查改的伺服器端處理，部署在 asia-east1）
 const functions = getFunctions(app, 'asia-east1');
+
+// ── 報名系統（網址 ?s=系統代碼）──
+// 每個系統各自獨立：自己的活動、參加者資料。這個頁面只顯示網址指定的系統。
+const SYS=(new URLSearchParams(location.search).get('s')||'').trim().toLowerCase();
+const SYS_RE=/^[a-z0-9][a-z0-9-]{1,29}$/;
+// 呼叫後端時自動帶上系統代碼
+function callFn(name){
+  const fn=httpsCallable(functions,name);
+  return data=>fn({...data,systemId:SYS});
+}
 
 // ── 匿名登入（使用者無感）──
 // firestore.rules 要求所有讀寫至少要有登入身分；這裡在背景自動取得
@@ -271,7 +286,7 @@ async function initSignupPage(){
   signupEvents=[];
   const content=document.getElementById('signupContent');
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
-  const snap=await getDocs(query(collection(db,'events'), orderBy('createdAt','desc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
   signupEvents=snap.docs.map(d=>({id:d.id,...d.data()})).filter(ev=>isStaffRegOpen(ev));
   if(!signupEvents.length){content.innerHTML='<div class="card"><div class="loading-cell">目前沒有開放工作人員報名的活動</div></div>';return;}
   if(signupEvents.length===1){await selectSignupEvent(signupEvents[0].id);}
@@ -428,7 +443,7 @@ window.submitSignup=async function(){
     // 資料庫下架，伺服器端以「身分證當文件ID + transaction 不存在才寫入」
     // 防重複（與原本前端 transaction 的行為一致），並做欄位驗證。
     if(!currentTurnstileToken){showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error');btn.textContent='送出報名';btn.disabled=false;return;}
-    const res=(await httpsCallable(functions,'staffAction')({
+    const res=(await callFn('staffAction')({
       eventId,action:'signup',idNumber,turnstileToken:currentTurnstileToken,
       profile:{name,gender,birthday,phone,email,note},customData
     })).data;
@@ -460,7 +475,7 @@ let staffCache={}; // 查詢回傳的本人資料快取（供修改表單預填�
 async function initStatusPage(){
   const content=document.getElementById('statusContent');
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
-  const snap=await getDocs(query(collection(db,'events'),orderBy('createdAt','desc')));
+  const snap=await getDocs(query(collection(db,'systems',SYS,'events'),orderBy('createdAt','desc')));
   allStatusEvents=snap.docs.map(d=>({id:d.id,...d.data()}));
   if(!allStatusEvents.length){
     content.innerHTML='<div class="card"><div class="loading-cell">目前沒有活動資料</div></div>';
@@ -522,7 +537,7 @@ window.doStatusQuery=async function(){
   // 快取起來給修改表單使用
   let qres;
   try{
-    qres=(await httpsCallable(functions,'staffAction')({eventId,action:'query',idNumber:idNum.toUpperCase()})).data;
+    qres=(await callFn('staffAction')({eventId,action:'query',idNumber:idNum.toUpperCase()})).data;
   }catch(err){
     result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">查詢失敗：'+esc(err.message)+'</div></div>';return;
   }
@@ -562,7 +577,7 @@ window.doStatusQuery=async function(){
 // ── 撤銷取消申請 ──
 window.withdrawStaffCancelRequest=async function(eventId, staffDocId, cardId){
   try{
-    await httpsCallable(functions,'staffAction')({eventId,action:'withdraw',idNumber:staffDocId});
+    await callFn('staffAction')({eventId,action:'withdraw',idNumber:staffDocId});
     const actions=document.getElementById(cardId+'_actions');
     if(actions) actions.outerHTML='<div id="'+cardId+'_actions">'
       +'<div style="display:flex;gap:8px;margin-top:12px">'
@@ -578,7 +593,7 @@ window.withdrawStaffCancelRequest=async function(eventId, staffDocId, cardId){
 window.requestCancelStaffEntry=async function(eventId, staffDocId, cardId){
   if(!confirm('確定要送出取消報名申請？\n（送出後請等待主辦方審核確認，不會立即取消）'))return;
   try{
-    await httpsCallable(functions,'staffAction')({eventId,action:'cancel',idNumber:staffDocId});
+    await callFn('staffAction')({eventId,action:'cancel',idNumber:staffDocId});
     const actions=document.getElementById(cardId+'_actions');
     if(actions) actions.outerHTML='<div style="margin-top:12px;padding:10px 12px;background:var(--surface2);border-radius:8px;font-size:.82rem;color:var(--muted)">⏳ 已送出取消申請，請等待主辦方確認</div>';
     showToast('已送出取消申請');
@@ -594,7 +609,7 @@ window.showEditForm=async function(eventId,staffDocId,cardId){
   // 個資改由查詢時的 Cloud Function 回傳（staff 集合已不開放讀取）
   const e=staffCache[staffDocId];
   if(!e){showToast('資料已過期，請重新查詢','error');box.innerHTML='';box.dataset.open='';return;}
-  const evDoc=await getDoc(doc(db,'events',eventId));
+  const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const customFields=evDoc.data()?.staffCustomFields||[];
   const sfs=evDoc.data()?.staffFieldSettings||{};
   const phoneShow=sfs.phone?.show!==false, phoneReq=sfs.phone?.required===true;
@@ -681,7 +696,7 @@ window.saveEdit=async function(eventId,staffDocId,cardId){
   try{
     // 儲存改走 Cloud Function（伺服器端驗證後就地更新；文件ID＝查詢用的
     // 原身分證，欄位裡的身分證可修改）
-    await httpsCallable(functions,'staffAction')({
+    await callFn('staffAction')({
       eventId,action:'save',idNumber:staffDocId,
       profile:{name,gender,birthday,phone,email,note,newIdNumber:idNumber},customData
     });
@@ -691,7 +706,46 @@ window.saveEdit=async function(eventId,staffDocId,cardId){
   }catch(err){showToast('儲存失敗：'+err.message,'error');}
 }
 
-ensureAuth().then(()=>initSignupPage());
+// 先確認報名系統，再載入報名頁
+ensureAuth().then(initSystem).then(ok=>{ if(ok) initSignupPage(); });
+
+// ── 確認網址指定的系統 ──
+// 有帶系統代碼：讀出系統名稱顯示在頁首。
+// 沒帶代碼：依總後台的設定，列出開放的系統讓人選，或請對方確認網址。
+async function initSystem(){
+  if(SYS){
+    let snap=null;
+    if(SYS_RE.test(SYS)) snap=await getDoc(doc(db,'systems',SYS)).catch(()=>null);
+    if(snap&&snap.exists()){
+      const name=snap.data().name||SYS;
+      document.getElementById('sysName').textContent=name;
+      document.title=name+'｜工作人員服務';
+      return true;
+    }
+    showSysGate('<h3 style="margin-bottom:8px">找不到這個報名系統</h3><p style="color:var(--muted);font-size:.88rem">請確認報名網址是否正確。</p>');
+    return false;
+  }
+  let list=[];
+  try{
+    const st=await getDoc(doc(db,'platform','settings'));
+    if(st.exists()&&st.data().showSystemList===true){
+      const snap=await getDocs(query(collection(db,'systems'),where('listed','==',true)));
+      list=snap.docs.map(d=>({id:d.id,name:d.data().name||d.id})).sort((a,b)=>a.name.localeCompare(b.name,'zh-Hant'));
+    }
+  }catch(e){ console.warn('系統清單讀取失敗',e); }
+  if(list.length){
+    showSysGate('<h3 style="margin-bottom:4px">請選擇報名系統</h3>'
+      +list.map(x=>'<a class="sys-pick" href="'+location.pathname+'?s='+encodeURIComponent(x.id)+'">'+esc(x.name)+'</a>').join(''));
+  }else{
+    showSysGate('<h3 style="margin-bottom:8px">請使用正確的報名網址</h3><p style="color:var(--muted);font-size:.88rem">這個網址沒有指定報名系統，請向主辦單位確認報名網址。</p>');
+  }
+  return false;
+}
+function showSysGate(html){
+  document.body.classList.add('no-sys');
+  const g=document.getElementById('sysGate');
+  g.innerHTML=html; g.style.display='block';
+}
 
 // ── 關於 ──
 const ABOUT_INFO = {
