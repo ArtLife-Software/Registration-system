@@ -140,7 +140,7 @@ body.no-sys .tabs, body.no-sys .page{display:none!important;}
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
 import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, query, orderBy, where, serverTimestamp, writeBatch, deleteField, runTransaction, getCountFromServer } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js";
@@ -156,9 +156,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 // App Check：確保呼叫Cloud Function的請求真的是從這個網頁發出的，擋掉繞過網頁畫面、
 // 直接寫程式呼叫API的機器人。下面的佔位字串要換成 Firebase Console→App Check→
-// 註冊應用程式（reCAPTCHA v3 提供者）用的網站金鑰（已填入，與另一個系統共用）。
+// 註冊應用程式（Fraud Defense／reCAPTCHA Enterprise 提供者）用的網站金鑰。
 initializeAppCheck(app, {
-  provider: new ReCaptchaV3Provider('6LeH82QtAAAAANl6-GvxdulgCoaBj1GoyKtfqSTR'),
+  provider: new ReCaptchaEnterpriseProvider('RECAPTCHA_ENTERPRISE_SITE_KEY_PLACEHOLDER'),
   isTokenAutoRefreshEnabled: true
 });
 const db = getFirestore(app);
