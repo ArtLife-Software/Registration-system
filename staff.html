@@ -197,6 +197,155 @@ function ensureAuth(){
 }
 
 // ── HTML escape（防止使用者輸入被當作HTML/JS執行）──
+// ── 自訂欄位的顯示條件與區塊（admin.html／member.html／staff.html／後端各放一份，判斷邏輯必須一致）──
+// 欄位可設 cond：{ src, op, val }
+//   src：排在上面的某個自訂欄位 id，或 '__gender'（性別）、'__age'（年齡，以活動日期計算）
+//   op：in（等於其中任一項：下拉、性別）、has（有勾其中任一項：複選）、checked／unchecked（勾選框）、
+//       filled／empty（文字有填／沒填）、age（年齡介於 val.min～val.max，留空不限）
+// 區塊標題（type:'section'）：到下一個區塊標題前的欄位都屬於它；區塊隱藏時，裡面的欄位全部隱藏。
+// 隱藏的欄位不顯示、不驗證、不送出（跟「適用組別」一樣）；條件來源被隱藏時，依賴它的欄位也隱藏。
+// ctx：{ groupId, gender, age }；values：{ 欄位id: 目前的值 }
+function cfVisibility(fields, values, ctx){
+  const vis={}; let sec=true;
+  const groupOk=f=>!f.groups||!f.groups.length||f.groups.includes(ctx.groupId||'');
+  const condOk=c=>{
+    if(!c||!c.src) return true;
+    if(c.src==='__gender') return (c.val||[]).includes(ctx.gender||'');
+    if(c.src==='__age'){
+      const a=ctx.age; if(a===null||a===undefined||isNaN(a)) return false;
+      const mn=c.val&&c.val.min, mx=c.val&&c.val.max;
+      return (!(mn>0)||a>=mn)&&(!(mx>0)||a<=mx);
+    }
+    if(!vis[c.src]) return false; // 來源被隱藏、排在下面或已刪除
+    const v=values[c.src];
+    switch(c.op){
+      case 'in': return typeof v==='string'&&(c.val||[]).includes(v);
+      case 'has': return Array.isArray(v)&&v.some(x=>(c.val||[]).includes(x));
+      case 'checked': return v===true;
+      case 'unchecked': return v!==true;
+      case 'filled': return Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v);
+      case 'empty': return !(Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v));
+      default: return true;
+    }
+  };
+  for(const f of fields){
+    if(f.type==='section'){ sec=groupOk(f)&&condOk(f.cond); vis[f.id]=sec; continue; }
+    vis[f.id]=sec&&groupOk(f)&&condOk(f.cond);
+  }
+  return vis;
+}
+// 表單、列表、匯出用的「有資料的欄位」（排除區塊標題）
+function cfDataFields(fields){ return (fields||[]).filter(f=>f.type!=='section'); }
+// 讀出表單上某個自訂欄位目前的值（判斷顯示條件用）
+function cfReadRaw(id, f){
+  const el=document.getElementById(id); if(!el) return undefined;
+  if(f.type==='multi'){
+    const vals=[...el.querySelectorAll('input[type=checkbox]:not([data-other]):checked')].map(x=>x.value);
+    const oc=el.querySelector('input[data-other]');
+    if(oc&&oc.checked){ const t=(document.getElementById(id+'_other')?.value||'').trim(); if(t) vals.push(t); }
+    return vals;
+  }
+  if(f.type==='checkbox') return el.checked;
+  let v=(el.value||'').trim();
+  if(f.type==='select'&&f.allowOther&&v==='__other__') v=(document.getElementById(id+'_other')?.value||'').trim();
+  return v;
+}
+// 依目前填寫內容切換欄位的顯示；回傳 vis（欄位id → 是否顯示）
+function cfApplyVisibility(fields, idPrefix, rowPrefix, ctx){
+  const values={};
+  (fields||[]).forEach(f=>{ if(f.type!=='section') values[f.id]=cfReadRaw(idPrefix+f.id,f); });
+  const vis=cfVisibility(fields||[], values, ctx);
+  (fields||[]).forEach(f=>{ const row=document.getElementById(rowPrefix+f.id); if(row) row.style.display=vis[f.id]?'':'none'; });
+  return vis;
+}
+// 表單上的年齡（以活動日期計算；生日沒填或格式不對＝null）
+function cfAgeFrom(birthday, evDate){
+  if(!birthday||!/^\d{4}\/\d{2}\/\d{2}$/.test(birthday)) return null;
+  const [by,bm,bd]=birthday.split('/').map(Number);
+  const base=evDate?new Date(String(evDate).replace(/\//g,'-')+'T00:00:00'):new Date();
+  if(isNaN(base)) return null;
+  let age=base.getFullYear()-by;
+  if(base.getMonth()+1<bm||(base.getMonth()+1===bm&&base.getDate()<bd)) age--;
+  return age>=0?age:null;
+}
+function cfSectionHtml(f){
+  return '<div class="cf-section" style="margin:18px 0 12px;padding-top:12px;border-top:1px solid var(--border)">'
+    +'<div style="font-weight:800;font-size:.95rem">'+esc(f.label)+'</div>'
+    +(f.description?'<div style="font-size:.78rem;color:var(--muted);margin-top:2px">'+esc(f.description)+'</div>':'')+'</div>';
+}
+
+// 報名表單：依性別、年齡與已填內容切換自訂欄位（工作人員沒有組別）
+function refreshSignupCf(){
+  return cfApplyVisibility(curSignupCustomFields,'su_cf_','su_cf_row_',{groupId:'',
+    gender:document.getElementById('suGender')?.value||'',
+    age:cfAgeFrom(document.getElementById('suBirthday')?.value.trim(), curSignupEvent?.date||'')});
+}
+// 修改表單
+function refreshEditCf(cardId){
+  const box=document.getElementById(cardId+'_edit'); if(!box) return {};
+  let fields=[]; try{fields=JSON.parse(box.dataset.customFields||'[]');}catch(e){return {};}
+  return cfApplyVisibility(fields, cardId+'_cf_', cardId+'_cf_row_', {groupId:'',
+    gender:document.getElementById(cardId+'_gender')?.value||'',
+    age:cfAgeFrom(document.getElementById(cardId+'_birthday')?.value.trim(), box.dataset.evdate||'')});
+}
+['input','change'].forEach(evt=>document.addEventListener(evt,e=>{
+  const t=e.target; if(!t||!t.closest) return;
+  if(t.closest('#signupForm,#signupContent')) refreshSignupCf();
+  const box=t.closest('[id$="_edit"]'); if(box&&box.dataset.customFields) refreshEditCf(box.id.slice(0,-5));
+},true));
+
+// ── 複選欄位（自訂欄位 type:'multi'）──
+// 值存成字串陣列；勾「其他」時把輸入的文字也放進陣列。
+// 必填＝至少選一項；最少（minSel）、最多（maxSel）留空＝不限。選填時可以都不選，有選就要符合最少／最多。
+function multiRangeText(f){
+  const mn=f.minSel||0, mx=f.maxSel||0;
+  if(mn&&mx) return mn===mx?'請選 '+mn+' 項':'請選 '+mn+'～'+mx+' 項';
+  if(mn) return '至少選 '+mn+' 項';
+  if(mx) return '最多選 '+mx+' 項';
+  return '可複選';
+}
+function multiFieldHtml(id, f, cur, reqMark, descHtml){
+  cur=Array.isArray(cur)?cur:(cur?[String(cur)]:[]);
+  const opts=f.options||[];
+  const others=cur.filter(v=>!opts.includes(v));
+  let h='<div class="input-group"><label>'+esc(f.label)+reqMark+' <span style="font-weight:400;color:var(--muted);font-size:.75rem">（'+multiRangeText(f)+'）</span></label>'
+    +'<div id="'+id+'" class="cf-multi" style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:4px 0">';
+  opts.forEach(o=>{ h+='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.88rem"><input type="checkbox" value="'+esc(o)+'"'+(cur.includes(o)?' checked':'')+'> '+esc(o)+'</label>'; });
+  if(f.allowOther) h+='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.88rem"><input type="checkbox" data-other="1"'+(others.length?' checked':'')
+    +' onchange="document.getElementById(\''+id+'_other\').style.display=this.checked?\'block\':\'none\'"> 其他（請輸入）</label>';
+  h+='</div>';
+  if(f.allowOther) h+='<input type="text" id="'+id+'_other" class="input" style="margin-top:6px;display:'+(others.length?'block':'none')+'" placeholder="請輸入..." value="'+esc(others.join('、'))+'">';
+  return h+descHtml+'</div>';
+}
+function multiCheck(f, vals){
+  const n=vals.length;
+  if(f.required&&!n) return '「'+f.label+'」為必填，請至少選一項';
+  if(n){
+    if(f.minSel&&n<f.minSel) return '「'+f.label+'」至少要選 '+f.minSel+' 項';
+    if(f.maxSel&&n>f.maxSel) return '「'+f.label+'」最多只能選 '+f.maxSel+' 項';
+  }
+  return '';
+}
+// 讀出複選欄位的值：回傳 {value:[...]} 或 {error:'訊息'}
+function readMultiField(id, f){
+  const box=document.getElementById(id); if(!box) return {value:[]};
+  const vals=[...box.querySelectorAll('input[type=checkbox]:not([data-other]):checked')].map(el=>el.value);
+  const oc=box.querySelector('input[data-other]');
+  if(oc&&oc.checked){
+    const t=(document.getElementById(id+'_other')?.value||'').trim();
+    if(!t) return {error:'「'+f.label+'」勾選了「其他」，請輸入內容'};
+    vals.push(t);
+  }
+  const err=multiCheck(f, vals);
+  return err?{error:err}:{value:vals};
+}
+// 自訂欄位的顯示文字（列表、匯出用）
+function cfDisplayValue(f, v){
+  if(f.type==='checkbox') return v?'是':'否';
+  if(Array.isArray(v)) return v.join('、');
+  return v===undefined||v===null?'':String(v);
+}
+
 function esc(v) {
   return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
@@ -388,7 +537,12 @@ async function selectSignupEvent(eventId,keepWrapper){
   curSignupCustomFields.forEach(f=>{
     const id='su_cf_'+f.id; const reqMark=f.required?' <span class="required-star">*</span>':'';
     const descHtml=f.description?'<div style="font-size:.75rem;color:var(--text);margin-top:2px">'+esc(f.description)+'</div>':'';
-    if(f.type==='select'){
+    formHtml+='<div id="su_cf_row_'+f.id+'">';
+    if(f.type==='section'){
+      formHtml+=cfSectionHtml(f);
+    }else if(f.type==='multi'){
+      formHtml+=multiFieldHtml(id, f, [], reqMark, descHtml);
+    }else if(f.type==='select'){
       formHtml+='<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><select id="'+id+'" class="input"'+(f.allowOther?' onchange="document.getElementById(\''+id+'_other\').style.display=this.value===\'__other__\'?\'block\':\'none\'"':'')+'><option value="">請選擇...</option>';
       (f.options||[]).forEach(o=>{formHtml+='<option value="'+esc(o)+'">'+esc(o)+'</option>';});
       if(f.allowOther)formHtml+='<option value="__other__">其他（請輸入）</option>';
@@ -398,12 +552,14 @@ async function selectSignupEvent(eventId,keepWrapper){
     }else{
       formHtml+='<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><input id="'+id+'" type="text" class="input">'+descHtml+'</div>';
     }
+    formHtml+='</div>';
   });
   formHtml+='<div id="turnstileContainer" style="margin:12px 0;display:flex;justify-content:center;min-height:65px"></div>';
   formHtml+='<button class="btn btn-primary btn-full" onclick="submitSignup()">送出報名</button></div>';
   if(keepWrapper){document.getElementById('signupForm').innerHTML=formHtml;}
   else{document.getElementById('signupContent').innerHTML=formHtml;}
   renderTurnstileWidget('turnstileContainer');
+  refreshSignupCf();
 }
 
 // Turnstile 明確渲染：這個表單是動態插入畫面的，Turnstile預設的隱式渲染只在api.js
@@ -460,8 +616,11 @@ window.submitSignup=async function(){
   }
   // 自訂欄位
   const customData={};
+  const suVis=refreshSignupCf();
   for(const f of curSignupCustomFields){
+    if(f.type==='section'||!suVis[f.id])continue; // 隱藏的欄位：不驗證、不送出
     const el=document.getElementById('su_cf_'+f.id); if(!el)continue;
+    if(f.type==='multi'){ const r=readMultiField('su_cf_'+f.id,f); if(r.error){showToast(r.error,'error');return;} customData[f.id]=r.value; continue; }
     if(f.type==='checkbox'){
       if(f.required&&!el.checked){showToast('「'+f.label+'」為必填，請勾選','error');return;}
       customData[f.id]=el.checked;
@@ -671,7 +830,12 @@ window.showEditForm=async function(eventId,staffDocId,cardId){
     const fid=cardId+'_cf_'+f.id;
     const reqMark=f.required?' <span class="required-star">*</span>':'';
     const descHtml=f.description?'<div style="font-size:.75rem;color:var(--text);margin-top:2px">'+esc(f.description)+'</div>':'';
-    if(f.type==='select'){
+    html+='<div id="'+cardId+'_cf_row_'+f.id+'">';
+    if(f.type==='section'){
+      html+=cfSectionHtml(f);
+    }else if(f.type==='multi'){
+      html+=multiFieldHtml(fid, f, cd[f.id], reqMark, descHtml);
+    }else if(f.type==='select'){
       const isOtherVal=f.allowOther&&cd[f.id]!==undefined&&cd[f.id]!==''&&!(f.options||[]).includes(cd[f.id]);
       html+='<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><select id="'+fid+'" class="input"'+(f.allowOther?' onchange="document.getElementById(\''+fid+'_other\').style.display=this.value===\'__other__\'?\'block\':\'none\'"':'')+'><option value="">請選擇...</option>';
       (f.options||[]).forEach(o=>{html+='<option value="'+esc(o)+'"'+(cd[f.id]===o?' selected':'')+'>'+esc(o)+'</option>';});
@@ -682,12 +846,15 @@ window.showEditForm=async function(eventId,staffDocId,cardId){
     }else{
       html+='<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><input id="'+fid+'" type="text" class="input" value="'+esc(cd[f.id]||'')+'">'+descHtml+'</div>';
     }
+    html+='</div>';
   });
   html+='<button class="btn btn-primary btn-full" onclick="saveEdit(\''+eventId+'\',\''+staffDocId+'\',\''+cardId+'\')">儲存修改</button>';
   html+='</div>';
   box.innerHTML=html;
   box.dataset.customFields=JSON.stringify(customFields);
   box.dataset.sfs=JSON.stringify(sfs);
+  box.dataset.evdate=evDoc.data()?.date||'';
+  refreshEditCf(cardId);
 }
 
 window.saveEdit=async function(eventId,staffDocId,cardId){
@@ -715,8 +882,11 @@ window.saveEdit=async function(eventId,staffDocId,cardId){
   }
   const customFields=JSON.parse(document.getElementById(cardId+'_edit').dataset.customFields||'[]');
   const customData={};
+  const editVis=refreshEditCf(cardId);
   for(const f of customFields){
+    if(f.type==='section'||!editVis[f.id])continue; // 隱藏的欄位：不送出
     const el=document.getElementById(cardId+'_cf_'+f.id); if(!el)continue;
+    if(f.type==='multi'){ const r=readMultiField(cardId+'_cf_'+f.id,f); if(r.error){showToast(r.error,'error');return;} customData[f.id]=r.value; continue; }
     if(f.type==='checkbox'){
       if(f.required&&!el.checked){showToast('「'+f.label+'」為必填，請勾選','error');return;}
       customData[f.id]=el.checked;

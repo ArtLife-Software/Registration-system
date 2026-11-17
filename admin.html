@@ -336,6 +336,232 @@ function findPersonMatch(candidates, target, excludeId) {
   return { match, status };
 }
 
+// ── 複選欄位（自訂欄位 type:'multi'）──
+// 值存成字串陣列；勾「其他」時把輸入的文字也放進陣列。
+// 必填＝至少選一項；最少（minSel）、最多（maxSel）留空＝不限。選填時可以都不選，有選就要符合最少／最多。
+function multiRangeText(f){
+  const mn=f.minSel||0, mx=f.maxSel||0;
+  if(mn&&mx) return mn===mx?'請選 '+mn+' 項':'請選 '+mn+'～'+mx+' 項';
+  if(mn) return '至少選 '+mn+' 項';
+  if(mx) return '最多選 '+mx+' 項';
+  return '可複選';
+}
+function multiFieldHtml(id, f, cur, reqMark, descHtml){
+  cur=Array.isArray(cur)?cur:(cur?[String(cur)]:[]);
+  const opts=f.options||[];
+  const others=cur.filter(v=>!opts.includes(v));
+  let h='<div class="input-group"><label>'+esc(f.label)+reqMark+' <span style="font-weight:400;color:var(--muted);font-size:.75rem">（'+multiRangeText(f)+'）</span></label>'
+    +'<div id="'+id+'" class="cf-multi" style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:4px 0">';
+  opts.forEach(o=>{ h+='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.88rem"><input type="checkbox" value="'+esc(o)+'"'+(cur.includes(o)?' checked':'')+'> '+esc(o)+'</label>'; });
+  if(f.allowOther) h+='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.88rem"><input type="checkbox" data-other="1"'+(others.length?' checked':'')
+    +' onchange="document.getElementById(\''+id+'_other\').style.display=this.checked?\'block\':\'none\'"> 其他（請輸入）</label>';
+  h+='</div>';
+  if(f.allowOther) h+='<input type="text" id="'+id+'_other" class="input" style="margin-top:6px;display:'+(others.length?'block':'none')+'" placeholder="請輸入..." value="'+esc(others.join('、'))+'">';
+  return h+descHtml+'</div>';
+}
+function multiCheck(f, vals){
+  const n=vals.length;
+  if(f.required&&!n) return '「'+f.label+'」為必填，請至少選一項';
+  if(n){
+    if(f.minSel&&n<f.minSel) return '「'+f.label+'」至少要選 '+f.minSel+' 項';
+    if(f.maxSel&&n>f.maxSel) return '「'+f.label+'」最多只能選 '+f.maxSel+' 項';
+  }
+  return '';
+}
+// 讀出複選欄位的值：回傳 {value:[...]} 或 {error:'訊息'}
+function readMultiField(id, f){
+  const box=document.getElementById(id); if(!box) return {value:[]};
+  const vals=[...box.querySelectorAll('input[type=checkbox]:not([data-other]):checked')].map(el=>el.value);
+  const oc=box.querySelector('input[data-other]');
+  if(oc&&oc.checked){
+    const t=(document.getElementById(id+'_other')?.value||'').trim();
+    if(!t) return {error:'「'+f.label+'」勾選了「其他」，請輸入內容'};
+    vals.push(t);
+  }
+  const err=multiCheck(f, vals);
+  return err?{error:err}:{value:vals};
+}
+// 自訂欄位的顯示文字（列表、匯出用）
+function cfDisplayValue(f, v){
+  if(f.type==='checkbox') return v?'是':'否';
+  if(Array.isArray(v)) return v.join('、');
+  return v===undefined||v===null?'':String(v);
+}
+
+// ── 自訂欄位的顯示條件與區塊（admin.html／member.html／staff.html／後端各放一份，判斷邏輯必須一致）──
+// 欄位可設 cond：{ src, op, val }
+//   src：排在上面的某個自訂欄位 id，或 '__gender'（性別）、'__age'（年齡，以活動日期計算）
+//   op：in（等於其中任一項：下拉、性別）、has（有勾其中任一項：複選）、checked／unchecked（勾選框）、
+//       filled／empty（文字有填／沒填）、age（年齡介於 val.min～val.max，留空不限）
+// 區塊標題（type:'section'）：到下一個區塊標題前的欄位都屬於它；區塊隱藏時，裡面的欄位全部隱藏。
+// 隱藏的欄位不顯示、不驗證、不送出（跟「適用組別」一樣）；條件來源被隱藏時，依賴它的欄位也隱藏。
+// ctx：{ groupId, gender, age }；values：{ 欄位id: 目前的值 }
+function cfVisibility(fields, values, ctx){
+  const vis={}; let sec=true;
+  const groupOk=f=>!f.groups||!f.groups.length||f.groups.includes(ctx.groupId||'');
+  const condOk=c=>{
+    if(!c||!c.src) return true;
+    if(c.src==='__gender') return (c.val||[]).includes(ctx.gender||'');
+    if(c.src==='__age'){
+      const a=ctx.age; if(a===null||a===undefined||isNaN(a)) return false;
+      const mn=c.val&&c.val.min, mx=c.val&&c.val.max;
+      return (!(mn>0)||a>=mn)&&(!(mx>0)||a<=mx);
+    }
+    if(!vis[c.src]) return false; // 來源被隱藏、排在下面或已刪除
+    const v=values[c.src];
+    switch(c.op){
+      case 'in': return typeof v==='string'&&(c.val||[]).includes(v);
+      case 'has': return Array.isArray(v)&&v.some(x=>(c.val||[]).includes(x));
+      case 'checked': return v===true;
+      case 'unchecked': return v!==true;
+      case 'filled': return Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v);
+      case 'empty': return !(Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v));
+      default: return true;
+    }
+  };
+  for(const f of fields){
+    if(f.type==='section'){ sec=groupOk(f)&&condOk(f.cond); vis[f.id]=sec; continue; }
+    vis[f.id]=sec&&groupOk(f)&&condOk(f.cond);
+  }
+  return vis;
+}
+// 表單、列表、匯出用的「有資料的欄位」（排除區塊標題）
+function cfDataFields(fields){ return (fields||[]).filter(f=>f.type!=='section'); }
+// 讀出表單上某個自訂欄位目前的值（判斷顯示條件用）
+function cfReadRaw(id, f){
+  const el=document.getElementById(id); if(!el) return undefined;
+  if(f.type==='multi'){
+    const vals=[...el.querySelectorAll('input[type=checkbox]:not([data-other]):checked')].map(x=>x.value);
+    const oc=el.querySelector('input[data-other]');
+    if(oc&&oc.checked){ const t=(document.getElementById(id+'_other')?.value||'').trim(); if(t) vals.push(t); }
+    return vals;
+  }
+  if(f.type==='checkbox') return el.checked;
+  let v=(el.value||'').trim();
+  if(f.type==='select'&&f.allowOther&&v==='__other__') v=(document.getElementById(id+'_other')?.value||'').trim();
+  return v;
+}
+// 依目前填寫內容切換欄位的顯示；回傳 vis（欄位id → 是否顯示）
+function cfApplyVisibility(fields, idPrefix, rowPrefix, ctx){
+  const values={};
+  (fields||[]).forEach(f=>{ if(f.type!=='section') values[f.id]=cfReadRaw(idPrefix+f.id,f); });
+  const vis=cfVisibility(fields||[], values, ctx);
+  (fields||[]).forEach(f=>{ const row=document.getElementById(rowPrefix+f.id); if(row) row.style.display=vis[f.id]?'':'none'; });
+  return vis;
+}
+// 表單上的年齡（以活動日期計算；生日沒填或格式不對＝null）
+function cfAgeFrom(birthday, evDate){
+  if(!birthday||!/^\d{4}\/\d{2}\/\d{2}$/.test(birthday)) return null;
+  const [by,bm,bd]=birthday.split('/').map(Number);
+  const base=evDate?new Date(String(evDate).replace(/\//g,'-')+'T00:00:00'):new Date();
+  if(isNaN(base)) return null;
+  let age=base.getFullYear()-by;
+  if(base.getMonth()+1<bm||(base.getMonth()+1===bm&&base.getDate()<bd)) age--;
+  return age>=0?age:null;
+}
+function cfSectionHtml(f){
+  return '<div class="cf-section" style="margin:18px 0 12px;padding-top:12px;border-top:1px solid var(--border)">'
+    +'<div style="font-weight:800;font-size:.95rem">'+esc(f.label)+'</div>'
+    +(f.description?'<div style="font-size:.78rem;color:var(--muted);margin-top:2px">'+esc(f.description)+'</div>':'')+'</div>';
+}
+
+// ════════════════════════════
+// 自訂欄位編輯器：顯示條件、區塊標題
+// ════════════════════════════
+let cfEditFields=[]; // 開啟編輯表單時的欄位清單（決定「上面有哪些欄位」可當條件來源）
+let cfEditIndex=0;   // 正在編輯的欄位位置；新增時＝清單長度（排在最後）
+const CF_TYPE_LABEL={text:'文字',select:'下拉選單',checkbox:'是／否',multi:'複選',section:'區塊標題'};
+// 條件來源可用的欄位：排在 index 上面、而且不是區塊標題
+function cfCondSources(fields, index){ return fields.slice(0,index).filter(f=>f.type!=='section'); }
+// 條件的文字說明（欄位清單用）
+function cfCondText(c, fields){
+  if(!c||!c.src) return '';
+  const vals=a=>(a||[]).map(x=>'「'+x+'」').join('或');
+  if(c.src==='__gender') return '性別是'+vals(c.val);
+  if(c.src==='__age'){ const mn=c.val&&c.val.min, mx=c.val&&c.val.max; return '年齡'+(mn&&mx?mn+'～'+mx+' 歲':mn?mn+' 歲以上':mx+' 歲以下'); }
+  const src=fields.find(f=>f.id===c.src); const name=src?'「'+src.label+'」':'（已刪除的欄位）';
+  switch(c.op){
+    case 'in': return name+'選'+vals(c.val);
+    case 'has': return name+'有勾'+vals(c.val);
+    case 'checked': return name+'有勾選';
+    case 'unchecked': return name+'沒勾選';
+    case 'filled': return name+'有填寫';
+    case 'empty': return name+'沒填寫';
+  }
+  return name;
+}
+// 檢查所有欄位的條件來源都排在自己上面、而且還存在；有問題回傳說明文字
+function cfOrderProblem(fields){
+  for(let i=0;i<fields.length;i++){
+    const c=fields[i].cond; if(!c||!c.src||c.src.startsWith('__')) continue;
+    const j=fields.findIndex(f=>f.id===c.src);
+    if(j<0) return '「'+fields[i].label+'」的顯示條件用到的欄位已不存在，請先修改它的顯示條件';
+    if(j>=i) return '「'+fields[i].label+'」的顯示條件用到「'+fields[j].label+'」，條件來源必須排在它上面';
+  }
+  return '';
+}
+// 修改來源欄位後，檢查依賴它的條件是否還成立（類型、選項）
+function cfDependentsProblem(fields, field){
+  const opsFor={select:['in'],multi:['has'],checkbox:['checked','unchecked'],text:['filled','empty']};
+  for(const g of fields){
+    const c=g.cond; if(!c||c.src!==field.id) continue;
+    if(!(opsFor[field.type]||[]).includes(c.op)) return '「'+g.label+'」的顯示條件用到這個欄位，改類型前請先修改「'+g.label+'」的顯示條件';
+    if(c.op==='in'||c.op==='has'){
+      const missing=(c.val||[]).filter(v=>!(field.options||[]).includes(v));
+      if(missing.length) return '「'+g.label+'」的顯示條件用到選項「'+missing.join('、')+'」，請先修改它的顯示條件，再刪除這個選項';
+    }
+  }
+  return '';
+}
+function renderCfCondEditor(cond){
+  const sel=document.getElementById('cfCondSrc');
+  const srcs=cfCondSources(cfEditFields,cfEditIndex);
+  sel.innerHTML='<option value="">一律顯示</option><option value="__gender">性別</option><option value="__age">年齡（以活動日期計算）</option>'
+    +srcs.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.label)+'（'+(CF_TYPE_LABEL[f.type]||f.type)+'）</option>').join('');
+  sel.value=(cond&&cond.src&&[...sel.options].some(o=>o.value===cond.src))?cond.src:'';
+  renderCfCondDetail(cond);
+}
+window.onCfCondSrcChange=function(){ renderCfCondDetail(null); };
+function renderCfCondDetail(cond){
+  const src=document.getElementById('cfCondSrc').value;
+  const box=document.getElementById('cfCondDetail');
+  const chk=(vals,picked)=>'<div style="display:flex;flex-wrap:wrap;gap:6px 16px">'+vals.map(v=>'<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem"><input type="checkbox" class="cfCondOpt" value="'+esc(v)+'"'+((picked||[]).includes(v)?' checked':'')+'> '+esc(v)+'</label>').join('')+'</div>';
+  const radio=(opts,cur)=>'<div style="display:flex;gap:16px">'+opts.map(([v,t])=>'<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem"><input type="radio" name="cfCondOp" value="'+v+'"'+(cur===v?' checked':'')+'> '+t+'</label>').join('')+'</div>';
+  if(!src){ box.innerHTML=''; return; }
+  if(src==='__gender'){ box.innerHTML='<div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">性別是（可複選）：</div>'+chk(['男','女'],cond&&cond.val); return; }
+  if(src==='__age'){
+    const v=(cond&&cond.val)||{};
+    box.innerHTML='<div style="display:flex;align-items:center;gap:8px;font-size:.85rem">年齡 <input id="cfCondAgeMin" type="number" min="0" class="input" style="width:90px" placeholder="不限" value="'+(v.min||'')+'"> ～ <input id="cfCondAgeMax" type="number" min="0" class="input" style="width:90px" placeholder="不限" value="'+(v.max||'')+'"> 歲</div>'
+      +'<div style="font-size:.72rem;color:var(--muted);margin-top:4px">以活動日期計算（活動沒設日期時以報名當天計算），包含兩端；沒填生日時視為不符合。</div>';
+    return;
+  }
+  const f=cfEditFields.find(x=>x.id===src); if(!f){ box.innerHTML=''; return; }
+  if(f.type==='select') box.innerHTML='<div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">選了以下任一項時顯示：</div>'+chk(f.options||[],cond&&cond.val);
+  else if(f.type==='multi') box.innerHTML='<div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">有勾以下任一項時顯示：</div>'+chk(f.options||[],cond&&cond.val);
+  else if(f.type==='checkbox') box.innerHTML=radio([['checked','有勾選時顯示'],['unchecked','沒勾選時顯示']],(cond&&cond.op)||'checked');
+  else box.innerHTML=radio([['filled','有填寫時顯示'],['empty','沒填寫時顯示']],(cond&&cond.op)||'filled');
+}
+// 讀出編輯器上的條件：回傳 {cond} 或 {error}；一律顯示時 cond＝null
+function readCfCondEditor(){
+  const src=document.getElementById('cfCondSrc').value;
+  if(!src) return {cond:null};
+  const picked=[...document.querySelectorAll('#cfCondDetail .cfCondOpt:checked')].map(el=>el.value);
+  if(src==='__gender'){ if(!picked.length) return {error:'顯示條件：請勾選性別'}; return {cond:{src,op:'in',val:picked}}; }
+  if(src==='__age'){
+    const mnR=document.getElementById('cfCondAgeMin').value.trim(), mxR=document.getElementById('cfCondAgeMax').value.trim();
+    const mn=mnR===''?0:parseInt(mnR,10), mx=mxR===''?0:parseInt(mxR,10);
+    if(!mn&&!mx) return {error:'顯示條件：請填寫年齡的最小或最大值'};
+    if((mnR!==''&&!(mn>=0))||(mxR!==''&&!(mx>=0))) return {error:'顯示條件：年齡要是整數'};
+    if(mn&&mx&&mn>mx) return {error:'顯示條件：年齡最小值不能大於最大值'};
+    const val={}; if(mn) val.min=mn; if(mx) val.max=mx;
+    return {cond:{src,op:'age',val}};
+  }
+  const f=cfEditFields.find(x=>x.id===src); if(!f) return {error:'顯示條件：找不到來源欄位'};
+  if(f.type==='select'||f.type==='multi'){ if(!picked.length) return {error:'顯示條件：請至少勾選一個選項'}; return {cond:{src,op:f.type==='multi'?'has':'in',val:picked}}; }
+  const op=document.querySelector('#cfCondDetail input[name=cfCondOp]:checked')?.value;
+  return {cond:{src,op:op||(f.type==='checkbox'?'checked':'filled')}};
+}
+
 // ── 登入 ──
 // 永久總管理員：寫死在這裡與 firestore.rules，避免總管理員名單被刪光後沒人能登入
 const ADMIN_EMAIL='lin.wushian@gmail.com';
@@ -1490,13 +1716,16 @@ async function loadCustomFields(){
   const list=document.getElementById('cfList');
   if(!fields.length){list.innerHTML='<div style="color:var(--muted);font-size:.85rem;padding:12px 0">尚無自訂欄位</div>';return;}
   list.innerHTML=fields.map((f,i)=>{
-    const typeLabel={text:'文字',select:'下拉選單',checkbox:'是／否'}[f.type]||f.type;
-    let detail=typeLabel+(f.required?'　必填':'　選填');
-    if(f.type==='select')detail+='　選項：'+esc((f.options||[]).join('、'))+(f.allowOther?'　（可輸入其他）':'');
+    const typeLabel=CF_TYPE_LABEL[f.type]||f.type;
+    let detail=typeLabel+(f.type==='section'?'':(f.required?'　必填':'　選填'));
+    if(f.type==='select'||f.type==='multi')detail+='　選項：'+esc((f.options||[]).join('、'))+(f.allowOther?'　（可輸入其他）':'');
+    if(f.type==='multi')detail+='　'+esc(multiRangeText(f));
     if(curCFType==='runner')detail+='　適用組別：'+((f.groups&&f.groups.length)?esc(f.groups.map(resolveCFGroupLabel).join('、')):'全部組別');
+    if(f.cond&&f.cond.src)detail+='<br><span style="color:var(--accent)">顯示條件：'+esc(cfCondText(f.cond,fields))+'</span>';
     if(f.description)detail+='<br>說明：'+esc(f.description);
-    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">'
-      +'<div><strong>'+esc(f.label)+'</strong><div style="font-size:.75rem;color:var(--muted)">'+detail+'</div></div>'
+    const isSec=f.type==='section';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)'+(isSec?';margin-top:6px;border-top:2px solid var(--accent)':'')+'">'
+      +'<div'+(isSec?'':' style="padding-left:'+(fields.slice(0,i).some(x=>x.type==='section')?'14px':'0')+'"')+'><strong>'+(isSec?'📑 ':'')+esc(f.label)+'</strong><div style="font-size:.75rem;color:var(--muted)">'+detail+'</div></div>'
       +'<div style="white-space:nowrap">'
       +(i>0?'<button class="btn btn-sm btn-ghost" onclick="moveCustomField('+i+',-1)">↑</button> ':'')
       +(i<fields.length-1?'<button class="btn btn-sm btn-ghost" onclick="moveCustomField('+i+',1)">↓</button> ':'')
@@ -1511,6 +1740,8 @@ window.moveCustomField=async function(i,dir){
   const fields=evDoc.data()?.[fieldKey]||[];
   const j=i+dir; if(j<0||j>=fields.length)return;
   [fields[i],fields[j]]=[fields[j],fields[i]];
+  const prob=cfOrderProblem(fields);
+  if(prob){showToast(prob,'error');return;}
   await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
   loadCustomFields();
 }
@@ -1534,8 +1765,16 @@ window.showAddCustomField=function(){
   document.getElementById('cfRequired').checked=false;
   document.getElementById('cfAllowOther').checked=false;
   document.getElementById('cfOptions').value='';
+  document.getElementById('cfMinSel').value='';
+  document.getElementById('cfMaxSel').value='';
   onCfTypeChange();
   if(curCFType==='runner')renderCfGroupsCheckboxes([]);
+  // 新欄位排在最後：上面所有欄位都可以當條件來源
+  getDoc(doc(db,'systems',SYS,'events',curCFEvId)).then(evDoc=>{
+    cfEditFields=evDoc.data()?.[curCFType==='staff'?'staffCustomFields':'customFields']||[];
+    cfEditIndex=cfEditFields.length;
+    renderCfCondEditor(null);
+  });
   document.getElementById('cfForm').style.display='block';
 }
 window.editCustomField=async function(i){
@@ -1551,14 +1790,25 @@ window.editCustomField=async function(i){
   document.getElementById('cfRequired').checked=!!f.required;
   document.getElementById('cfAllowOther').checked=!!f.allowOther;
   document.getElementById('cfOptions').value=(f.options||[]).join('\n');
+  document.getElementById('cfMinSel').value=f.minSel||'';
+  document.getElementById('cfMaxSel').value=f.maxSel||'';
+  cfEditFields=fields; cfEditIndex=i;
+  renderCfCondEditor(f.cond||null);
   onCfTypeChange();
   if(curCFType==='runner')renderCfGroupsCheckboxes(f.groups||[]);
   document.getElementById('cfForm').style.display='block';
 }
 window.onCfTypeChange=function(){
-  const isSelect=document.getElementById('cfType').value==='select';
+  const t=document.getElementById('cfType').value;
+  const isSelect=t==='select'||t==='multi';
   document.getElementById('cfOptionsRow').style.display=isSelect?'block':'none';
   document.getElementById('cfAllowOtherRow').style.display=isSelect?'block':'none';
+  document.getElementById('cfMultiRow').style.display=t==='multi'?'block':'none';
+  // 區塊標題：沒有選項、必填；只有名稱、說明、顯示條件、適用組別
+  document.getElementById('cfRequiredRow').style.display=t==='section'?'none':'';
+  document.getElementById('cfCondHint').textContent=t==='section'
+    ?'區塊標題到下一個區塊標題之間的欄位都屬於這個區塊；條件不成立時整個區塊一起隱藏。只能用排在上面的欄位當條件。'
+    :'只能用排在這個欄位上面的欄位當條件。條件不成立時這個欄位會隱藏，也不檢查必填、不保存內容。';
   const isCheckbox=document.getElementById('cfType').value==='checkbox';
   document.getElementById('cfRequiredLabel').textContent=isCheckbox?'必填（必須勾選才能送出）':'必填';
 }
@@ -1570,7 +1820,10 @@ window.saveCustomField=async function(){
   let type=document.getElementById('cfType').value;
   const required=document.getElementById('cfRequired').checked;
   if(!label){showToast('欄位名稱為必填','error');return;}
-  const field={id:'cf_'+Date.now()+'_'+Math.floor(Math.random()*1000), label, description, type, required};
+  const condRes=readCfCondEditor();
+  if(condRes.error){showToast(condRes.error,'error');return;}
+  const field={id:'cf_'+Date.now()+'_'+Math.floor(Math.random()*1000), label, description, type, required:type==='section'?false:required};
+  if(condRes.cond) field.cond=condRes.cond;
   if(curCFType==='runner'){
     field.groups=[...document.querySelectorAll('.cfGroupChk:checked')].map(el=>el.dataset.group);
   }
@@ -1578,17 +1831,32 @@ window.saveCustomField=async function(){
     // 「是/否下拉」本質為 select，固定選項，正規化後沿用既有 select 邏輯
     field.type='select';
     field.options=['是','否'];
-  } else if(type==='select'){
+  } else if(type==='select'||type==='multi'){
     const options=document.getElementById('cfOptions').value.split('\n').map(s=>s.trim()).filter(Boolean);
-    if(!options.length){showToast('下拉選單請至少輸入一個選項','error');return;}
+    if(!options.length){showToast((type==='multi'?'複選':'下拉選單')+'請至少輸入一個選項','error');return;}
+    if(new Set(options).size!==options.length){showToast('選項不能重複','error');return;}
     field.options=options;
     field.allowOther=document.getElementById('cfAllowOther').checked;
+    if(type==='multi'){
+      const minRaw=document.getElementById('cfMinSel').value.trim(), maxRaw=document.getElementById('cfMaxSel').value.trim();
+      const mn=minRaw===''?0:parseInt(minRaw,10), mx=maxRaw===''?0:parseInt(maxRaw,10);
+      const limit=options.length+(field.allowOther?1:0); // 能選的項目總數（「其他」算一項）
+      if((minRaw!==''&&!(mn>=1))||(maxRaw!==''&&!(mx>=1))){showToast('最少、最多要是 1 以上的整數，或留空','error');return;}
+      if(mn&&mx&&mn>mx){showToast('最少不能大於最多','error');return;}
+      if(mx>limit){showToast('最多不能超過可選的項目數（'+limit+'）','error');return;}
+      if(mn>limit){showToast('最少不能超過可選的項目數（'+limit+'）','error');return;}
+      if(mn) field.minSel=mn;
+      if(mx) field.maxSel=mx;
+    }
   }
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fields=evDoc.data()?.[fieldKey]||[];
   if(idx!==''){
     field.id=fields[idx].id;
+    // 這個欄位被別的欄位當條件來源時，改類型、刪選項前要先確認條件還成立
+    const dep=cfDependentsProblem(fields,field);
+    if(dep){showToast(dep,'error');return;}
     fields[idx]=field;
   } else {
     fields.push(field);
@@ -1603,6 +1871,8 @@ window.deleteCustomField=async function(i){
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fields=evDoc.data()?.[fieldKey]||[];
   const label=fields[i]?.label||'';
+  const deps=fields.filter(g=>g.cond&&g.cond.src===fields[i].id).map(g=>'「'+g.label+'」');
+  if(deps.length){showToast(deps.join('、')+'的顯示條件用到「'+label+'」，請先修改它們的顯示條件','error');return;}
   if(!confirm('確定刪除欄位「'+label+'」？已填寫的報名資料中此欄位的值將保留但不再顯示。'))return;
   fields.splice(i,1);
   await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
@@ -1673,7 +1943,7 @@ window.loadEntries=async function(){
   // 動態更新編號欄位的 placeholder
   const bibEl=document.getElementById('eBib');
   if(bibEl) bibEl.placeholder=String(1).padStart(curBibPadLength,'0');
-  refreshSearchFieldOptions('entrySearchField',curEntryCustomFields);
+  refreshSearchFieldOptions('entrySearchField',cfDataFields(curEntryCustomFields));
   // 更新表頭
   const thead=document.getElementById('entriesTableHead');
   const baseHeads=['編號','組別','ID','姓名','性別','生日','手機','Email','身分證','備註','家長聲明','聯絡人','聯絡人手機'];
@@ -1683,7 +1953,7 @@ window.loadEntries=async function(){
       ?'<th data-sort="'+baseSortKeys[i]+'" onclick="sortTable(\'entriesTableBody\',\''+baseSortKeys[i]+'\')">'+h+'<span class="sort-icon"> ⇅</span></th>'
       :'<th>'+h+'</th>'
     ).join('')
-    +curEntryCustomFields.map(f=>'<th data-sort="customData.'+f.id+'" onclick="sortTable(\'entriesTableBody\',\'customData.'+f.id+'\')">'+esc(f.label)+'<span class="sort-icon"> ⇅</span></th>').join('')
+    +cfDataFields(curEntryCustomFields).map(f=>'<th data-sort="customData.'+f.id+'" onclick="sortTable(\'entriesTableBody\',\'customData.'+f.id+'\')">'+esc(f.label)+'<span class="sort-icon"> ⇅</span></th>').join('')
     +'<th data-sort="createdAt" onclick="sortTable(\'entriesTableBody\',\'createdAt\')">報名時間<span class="sort-icon"> ⇅</span></th>'
     +'<th data-sort="checkin.checkedInAt" onclick="sortTable(\'entriesTableBody\',\'checkin.checkedInAt\')">報到<span class="sort-icon"> ⇅</span></th>'
     +'<th>操作</th>';
@@ -1718,7 +1988,7 @@ window.loadEntries=async function(){
 }
 function renderEntries(list){
   const tbody=document.getElementById('entriesTableBody');
-  const totalCols=17+curEntryCustomFields.length;
+  const totalCols=17+cfDataFields(curEntryCustomFields).length;
   if(!list.length){tbody.innerHTML='<tr><td colspan="'+totalCols+'" class="loading-cell">尚無報名資料</td></tr>';return;}
   const eventId=document.getElementById('entryEventSelect').value;
   tbody.innerHTML=list.map(e=>{
@@ -1726,10 +1996,9 @@ function renderEntries(list){
     const cd=e.customData||{};
     const ci=e.checkin;
     let customCells='';
-    curEntryCustomFields.forEach(f=>{
-      let v=cd[f.id];
-      if(f.type==='checkbox') v=v?'是':'否';
-      customCells+='<td>'+(v!==undefined&&v!==''?esc(v):'-')+'</td>';
+    cfDataFields(curEntryCustomFields).forEach(f=>{
+      const v=cfDisplayValue(f,cd[f.id]);
+      customCells+='<td>'+(v!==''?esc(v):'-')+'</td>';
     });
     const checkinCell=ci
       ?'<td><span class="badge badge-green">✅ 已報到</span><div style="font-size:.7rem;color:var(--muted)">'+(ci.checkedInAt?.toDate?ci.checkedInAt.toDate().toLocaleTimeString('zh-TW',{hour12:false}):'-')+'</div>'
@@ -1774,23 +2043,25 @@ window.doEntrySearch=function(){
   if(field==='group') kw=document.getElementById('entrySearchKwGroup')?.value||'';
   else if(field==='gender') kw=document.getElementById('entrySearchKwGender').value;
   else if(field==='checkin') kw=document.getElementById('entrySearchKwCheckin').value;
-  else if(cf&&cf.type==='select') kw=document.getElementById('entrySearchKwSelect').value;
+  else if(cf&&(cf.type==='select'||cf.type==='multi')) kw=document.getElementById('entrySearchKwSelect').value;
   else kw=document.getElementById('entrySearchKw').value.trim().toLowerCase();
   if(!kw&&field!=='gender'){renderEntries(getSorted('entriesTableBody',allEntries));return;}
-  const cfVal=(e,f)=>{const cd=e.customData||{};let v=cd[f.id];if(f.type==='checkbox')v=v?'是':'否';return v!==undefined&&v!==null?String(v):'';};
+  const cfVal=(e,f)=>cfDisplayValue(f,(e.customData||{})[f.id]);
   const filtered=allEntries.filter(e=>{
     const r=e.runnerData||{};
     const val=f=>(e[f]||r[f]||'').toString().toLowerCase();
     if(field==='all'){
       if(['uniqueId','name','bibNumber','group','gender','birthday','phone','email','idNumber','note'].some(f=>val(f).includes(kw))) return true;
       if((e.checkin?'已報到':'未報到').includes(kw)) return true;
-      return curEntryCustomFields.some(f=>cfVal(e,f).toLowerCase().includes(kw));
+      return cfDataFields(curEntryCustomFields).some(f=>cfVal(e,f).toLowerCase().includes(kw));
     }
     if(field==='group') return (e.groupId||'')===kw;
     if(field==='gender') return (e.gender||r.gender||'')===kw;
     if(field==='checkin') return (e.checkin?'已報到':'未報到')===kw;
     if(cf){
       // 下拉選單類型是固定選項，跟組別/性別一樣用精準比對；文字/勾選框維持模糊比對
+      // 下拉／複選是固定選項，用精準比對（複選：有勾這個選項就算）；文字／勾選框維持模糊比對
+      if(cf.type==='multi') return Array.isArray((e.customData||{})[cf.id])&&e.customData[cf.id].includes(kw);
       return cf.type==='select'?cfVal(e,cf)===kw:cfVal(e,cf).toLowerCase().includes(kw);
     }
     return val(field).includes(kw);
@@ -2074,7 +2345,7 @@ window.exportEntries=async function(){
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const evName=evDoc.data()?.name||'活動';
   const evDate=evDoc.data()?.date||'';
-  const customFields=evDoc.data()?.customFields||[];
+  const customFields=cfDataFields(evDoc.data()?.customFields||[]);
   const sorted=getSorted('entriesTableBody',allEntries);
   let csv='編號,組別,ID,姓名,性別,生日,手機號碼,E-Mail,身分證字號,備註,家長陪同聲明,緊急聯絡人,緊急聯絡人手機'+customFields.map(f=>','+csvCell(f.label)).join('')+',報名時間,報到,報到時間\n';
   sorted.forEach(e=>{
@@ -2083,9 +2354,7 @@ window.exportEntries=async function(){
       r.email,r.idNumber,r.note,
       e.parentalConsentAgreed?'已同意':'',e.parentName,e.parentPhone].map(csvCell).join(',');
     customFields.forEach(f=>{
-      let v=cd[f.id];
-      if(f.type==='checkbox') v=v?'是':'否';
-      csv+=','+csvCell(v!==undefined?v:'');
+      csv+=','+csvCell(cfDisplayValue(f,cd[f.id]));
     });
     csv+=','+csvCell(fmtDT(e.createdAt));
     csv+=','+csvCell(ci?'已報到':'未報到')+','+csvCell(ci?.checkedInAt?.toDate?ci.checkedInAt.toDate().toLocaleString('zh-TW'):'');
@@ -2104,7 +2373,11 @@ function renderEntryCustomFields(values){
     const reqMark=f.required?' <span class="required-star">*</span>':'';
     const descHtml=f.description?'<div style="font-size:.75rem;color:var(--text);margin-top:2px">'+esc(f.description)+'</div>':'';
     let inner;
-    if(f.type==='select'){
+    if(f.type==='section'){
+      inner=cfSectionHtml(f);
+    } else if(f.type==='multi'){
+      inner=multiFieldHtml(id, f, values[f.id], reqMark, descHtml);
+    } else if(f.type==='select'){
       const isOtherVal=f.allowOther&&values[f.id]!==undefined&&values[f.id]!==''&&!(f.options||[]).includes(values[f.id]);
       const opts=(f.options||[]).map(o=>'<option value="'+esc(o)+'"'+(values[f.id]===o?' selected':'')+'>'+esc(o)+'</option>').join('');
       const otherOpt=f.allowOther?'<option value="__other__"'+(isOtherVal?' selected':'')+'>其他（請輸入）</option>':'';
@@ -2122,23 +2395,22 @@ function renderEntryCustomFields(values){
 }
 // 依目前選定的組別，切換自訂欄位的顯示/隱藏（groups 未設定或空陣列＝全部組別皆顯示，
 // 跟參加者報名頁面 onSignupGroupChange 的邏輯一致）
+// 依目前的組別、性別、生日與已填內容，切換自訂欄位的顯示（顯示條件、區塊、適用組別）
+function entryCfCtx(){
+  return { groupId:document.getElementById('eGroup')?.value||'', gender:document.getElementById('eGender')?.value||'',
+    age:cfAgeFrom(document.getElementById('eBirthday')?.value.trim(), curEntryEventDate) };
+}
 function updateEntryCustomFieldsVisibility(){
-  const groupId=document.getElementById('eGroup')?.value||'';
-  curEntryCustomFields.forEach(f=>{
-    const row=document.getElementById('entryCfRow_'+f.id);
-    if(!row)return;
-    const applicable=!f.groups||!f.groups.length||f.groups.includes(groupId);
-    row.style.display=applicable?'':'none';
-  });
+  return cfApplyVisibility(curEntryCustomFields,'cfInput_','entryCfRow_',entryCfCtx());
 }
 function collectEntryCustomData(){
-  const groupId=document.getElementById('eGroup')?.value||'';
+  const vis=updateEntryCustomFieldsVisibility();
   const data={};
   for(const f of curEntryCustomFields){
-    const applicable=!f.groups||!f.groups.length||f.groups.includes(groupId);
-    if(!applicable)continue; // 不適用目前組別：不收集，等同清除
+    if(f.type==='section'||!vis[f.id])continue; // 隱藏的欄位：不收集，等同清除
     const el=document.getElementById('cfInput_'+f.id);
     if(!el)continue;
+    if(f.type==='multi'){data[f.id]=readMultiField('cfInput_'+f.id,f).value||[];continue;}
     if(f.type==='checkbox'){data[f.id]=el.checked;continue;}
     let v=el.value.trim();
     if(f.type==='select'&&f.allowOther&&v==='__other__'){
@@ -2149,13 +2421,13 @@ function collectEntryCustomData(){
   return data;
 }
 function validateEntryCustomFields(){
-  const groupId=document.getElementById('eGroup')?.value||'';
+  const vis=updateEntryCustomFieldsVisibility();
   for(const f of curEntryCustomFields){
-    if(!f.required)continue;
-    const applicable=!f.groups||!f.groups.length||f.groups.includes(groupId);
-    if(!applicable)continue; // 不適用目前組別的欄位不需要驗證必填
+    if(f.type==='section'||!vis[f.id])continue; // 隱藏的欄位不需要驗證
     const el=document.getElementById('cfInput_'+f.id);
     if(!el)continue;
+    if(f.type==='multi'){ const r=readMultiField('cfInput_'+f.id,f); if(r.error)return {label:f.label,type:'multi',msg:r.error}; continue; }
+    if(!f.required)continue;
     if(f.type==='checkbox'){ if(!el.checked)return {label:f.label,type:'checkbox'}; continue; }
     let v=el.value.trim();
     if(f.type==='select'&&f.allowOther&&v==='__other__'){
@@ -2235,8 +2507,9 @@ async function loadEntryGroupOptions(selectedId){
   const star=document.getElementById('eGroupStar'); if(star)star.style.display=required?'':'none';
   // 活動沒有任何組別：不顯示組別欄位（編輯時原本就有已刪除組別的例外，下面會再打開）
   document.getElementById('eGroupRow').style.display=gList.length?'':'none';
-  if(!required){
-    const o=document.createElement('option'); o.value=''; o.textContent='不選組別';
+  // 一律先顯示「請選擇...」；選填時選這個＝不選組別
+  {
+    const o=document.createElement('option'); o.value=''; o.textContent=required?'請選擇...':'請選擇（可不選）';
     sel.appendChild(o);
   }
   gList.forEach(g=>{
@@ -2559,7 +2832,7 @@ window.saveEntry=async function(){
   // addDoc() 建立新文件不支援 deleteField()，新文件本來就沒有這些欄位，不需要刪
   // 自訂欄位必填驗證
   const missingCF=validateEntryCustomFields();
-  if(missingCF){showToast('「'+missingCF.label+'」為必填'+(missingCF.type==='checkbox'?'，請勾選':''),'error');return;}
+  if(missingCF){showToast(missingCF.msg||('「'+missingCF.label+'」為必填'+(missingCF.type==='checkbox'?'，請勾選':'')),'error');return;}
   const customData=collectEntryCustomData();
   // 編號重複檢查
   const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
@@ -2876,7 +3149,7 @@ function switchKwControl(field, kwInputId, kwGroupId, kwGenderId, eventSelectId,
   if(field==='__all__'){ /* 全部參加者：全隱藏 */ }
   else if(field==='group'){ kwGroup.style.display='block'; if(eventSelectId)loadGroupDropdown(kwGroupId,eventSelectId); }
   else if(field==='gender'){ if(kwGender)kwGender.style.display='block'; }
-  else if(cf&&cf.type==='select'&&kwSelect){
+  else if(cf&&(cf.type==='select'||cf.type==='multi')&&kwSelect){
     kwSelect.innerHTML='<option value="">請選擇...</option>'+(cf.options||[]).map(o=>'<option value="'+esc(o)+'">'+esc(o)+'</option>').join('');
     kwSelect.style.display='block';
   }
@@ -2905,7 +3178,7 @@ window.onEntrySearchFieldChange=async function(){
   switchKwControl(
     field,
     'entrySearchKw','entrySearchKwGroup','entrySearchKwGender','entryEventSelect',
-    'entrySearchKwSelect',curEntryCustomFields
+    'entrySearchKwSelect',cfDataFields(curEntryCustomFields)
   );
 }
 async function loadGroupDropdown(selectId,eventSelectId){
@@ -3262,7 +3535,8 @@ window.loadStaff=async function(){
   tbody.innerHTML='<tr><td colspan="9" class="loading-cell">載入中...</td></tr>';
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   curStaffCustomFields=evDoc.data()?.staffCustomFields||[];
-  refreshSearchFieldOptions('staffSearchField',curStaffCustomFields);
+  curStaffEventDate=evDoc.data()?.date||'';
+  refreshSearchFieldOptions('staffSearchField',cfDataFields(curStaffCustomFields));
   // 更新表頭
   const thead=document.getElementById('staffTableHead');
   const baseHeads=['姓名','性別','生日','手機','Email','身分證','備註'];
@@ -3272,7 +3546,7 @@ window.loadStaff=async function(){
       ?'<th data-sort="'+baseSortKeys[i]+'" onclick="sortTable(\'staffTableBody\',\''+baseSortKeys[i]+'\')">'+h+'<span class="sort-icon"> ⇅</span></th>'
       :'<th>'+h+'</th>'
     ).join('')
-    +curStaffCustomFields.map(f=>'<th data-sort="customData.'+f.id+'" onclick="sortTable(\'staffTableBody\',\'customData.'+f.id+'\')">'+esc(f.label)+'<span class="sort-icon"> ⇅</span></th>').join('')
+    +cfDataFields(curStaffCustomFields).map(f=>'<th data-sort="customData.'+f.id+'" onclick="sortTable(\'staffTableBody\',\'customData.'+f.id+'\')">'+esc(f.label)+'<span class="sort-icon"> ⇅</span></th>').join('')
     +'<th>操作</th>';
   const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'staff'));
   allStaff=snap.docs.map(d=>({id:d.id,...d.data()}));
@@ -3282,15 +3556,15 @@ window.loadStaff=async function(){
 }
 function renderStaff(list){
   const tbody=document.getElementById('staffTableBody');
-  const totalCols=9+curStaffCustomFields.length;
+  const totalCols=9+cfDataFields(curStaffCustomFields).length;
   if(!list.length){tbody.innerHTML='<tr><td colspan="'+totalCols+'" class="loading-cell">尚無工作人員資料</td></tr>';return;}
   const eventId=document.getElementById('staffEventSelect').value;
   tbody.innerHTML=list.map(e=>{
     const cd=e.customData||{};
     let customCells='';
-    curStaffCustomFields.forEach(f=>{
-      let v=cd[f.id]; if(f.type==='checkbox')v=v?'是':'否';
-      customCells+='<td>'+(v!==undefined&&v!==''?esc(v):'-')+'</td>';
+    cfDataFields(curStaffCustomFields).forEach(f=>{
+      const v=cfDisplayValue(f,cd[f.id]);
+      customCells+='<td>'+(v!==''?esc(v):'-')+'</td>';
     });
     const cancelBadge=e.cancelRequested?' <span class="badge" style="background:rgba(239,68,68,.1);color:var(--red);border-color:rgba(239,68,68,.3)">⚠️ 申請取消中</span>':'';
     const rejectBtn=e.cancelRequested?'<button class="btn btn-sm btn-ghost" onclick="rejectStaffCancelRequest(\''+e.id+'\')">駁回申請</button> ':'';
@@ -3312,24 +3586,26 @@ function renderStaff(list){
   }).join('');
 }
 window.onStaffSearchFieldChange=function(){
-  switchKwControl(document.getElementById('staffSearchField').value,'staffSearchKw','','staffSearchKwGender',null,'staffSearchKwSelect',curStaffCustomFields);
+  switchKwControl(document.getElementById('staffSearchField').value,'staffSearchKw','','staffSearchKwGender',null,'staffSearchKwSelect',cfDataFields(curStaffCustomFields));
 }
 window.doStaffSearch=function(){
   const field=document.getElementById('staffSearchField').value;
   const cf=curStaffCustomFields.find(f=>f.id===field);
   const kw=field==='gender'?document.getElementById('staffSearchKwGender').value
-    :(cf&&cf.type==='select'?document.getElementById('staffSearchKwSelect').value
+    :(cf&&(cf.type==='select'||cf.type==='multi')?document.getElementById('staffSearchKwSelect').value
     :document.getElementById('staffSearchKw').value.trim().toLowerCase());
   if(!kw&&field!=='gender'){renderStaff(getSorted('staffTableBody',allStaff));return;}
-  const cfVal=(e,f)=>{const cd=e.customData||{};let v=cd[f.id];if(f.type==='checkbox')v=v?'是':'否';return v!==undefined&&v!==null?String(v):'';};
+  const cfVal=(e,f)=>cfDisplayValue(f,(e.customData||{})[f.id]);
   const filtered=allStaff.filter(e=>{
     const val=f=>(e[f]||'').toString().toLowerCase();
     if(field==='all'){
       if(['name','phone','email','idNumber','note'].some(f=>val(f).includes(kw))) return true;
-      return curStaffCustomFields.some(f=>cfVal(e,f).toLowerCase().includes(kw));
+      return cfDataFields(curStaffCustomFields).some(f=>cfVal(e,f).toLowerCase().includes(kw));
     }
     if(field==='gender') return (e.gender||'')===kw;
     if(cf){
+      // 下拉／複選是固定選項，用精準比對（複選：有勾這個選項就算）；文字／勾選框維持模糊比對
+      if(cf.type==='multi') return Array.isArray((e.customData||{})[cf.id])&&e.customData[cf.id].includes(kw);
       return cf.type==='select'?cfVal(e,cf)===kw:cfVal(e,cf).toLowerCase().includes(kw);
     }
     return val(field).includes(kw);
@@ -3387,10 +3663,28 @@ window.rejectStaffCancelRequest=async function(docId){
 function renderStaffCustomFields(values){
   const container=document.getElementById('staffCustomFieldsContainer');
   values=values||{};
-  container.innerHTML=curStaffCustomFields.map(f=>{
+  container.innerHTML=curStaffCustomFields.map(f=>'<div id="staffCfRow_'+f.id+'">'+(f.type==='section'?cfSectionHtml(f):staffCfInputHtml(f,values))+'</div>').join('');
+  updateStaffCustomFieldsVisibility();
+}
+// 工作人員表單：依性別、生日與已填內容切換自訂欄位顯示（工作人員沒有組別）
+let curStaffEventDate='';
+function updateStaffCustomFieldsVisibility(){
+  return cfApplyVisibility(curStaffCustomFields,'scfInput_','staffCfRow_',{groupId:'',gender:document.getElementById('sGender')?.value||'',
+    age:cfAgeFrom(document.getElementById('sBirthday')?.value.trim(), curStaffEventDate)});
+}
+// 後台的報名、工作人員表單：任何輸入變動都重新判斷顯示條件
+['input','change'].forEach(evt=>document.addEventListener(evt,e=>{
+  const t=e.target; if(!t||!t.closest) return;
+  if(t.closest('#entryModal')) updateEntryCustomFieldsVisibility();
+  else if(t.closest('#staffModal')) updateStaffCustomFieldsVisibility();
+},true));
+// 工作人員表單：單一自訂欄位的輸入框
+function staffCfInputHtml(f,values){
+  {
     const id='scfInput_'+f.id;
     const reqMark=f.required?' <span class="required-star">*</span>':'';
     const descHtml=f.description?'<div style="font-size:.75rem;color:var(--text);margin-top:2px">'+esc(f.description)+'</div>':'';
+    if(f.type==='multi') return multiFieldHtml(id, f, values[f.id], reqMark, descHtml);
     if(f.type==='select'){
       const isOtherVal=f.allowOther&&values[f.id]!==undefined&&values[f.id]!==''&&!(f.options||[]).includes(values[f.id]);
       const opts=(f.options||[]).map(o=>'<option value="'+esc(o)+'"'+(values[f.id]===o?' selected':'')+'>'+esc(o)+'</option>').join('');
@@ -3403,7 +3697,7 @@ function renderStaffCustomFields(values){
     } else {
       return '<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><input id="'+id+'" type="text" class="input" value="'+esc(values[f.id]!==undefined?values[f.id]:'')+'">'+descHtml+'</div>';
     }
-  }).join('');
+  }
 }
 window.searchStaffRunner=async function(){
   const t=document.getElementById('staffRunnerSearch').value.trim().toLowerCase();
@@ -3480,8 +3774,11 @@ window.saveStaff=async function(){
   }
   // 自訂欄位
   const customData={};
+  const staffVis=updateStaffCustomFieldsVisibility();
   for(const f of curStaffCustomFields){
+    if(f.type==='section'||!staffVis[f.id])continue; // 隱藏的欄位：不驗證、不送出
     const el=document.getElementById('scfInput_'+f.id); if(!el)continue;
+    if(f.type==='multi'){ const r=readMultiField('scfInput_'+f.id,f); if(r.error){showToast(r.error,'error');return;} customData[f.id]=r.value; continue; }
     if(f.type==='checkbox'){
       if(f.required&&!el.checked){showToast('「'+f.label+'」為必填，請勾選','error');return;}
       customData[f.id]=el.checked;
@@ -3517,13 +3814,13 @@ window.exportStaff=async function(){
   if(!allStaff.length){showToast('無工作人員資料','error');return;}
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   const evName=evDoc.data()?.name||'活動'; const evDate=evDoc.data()?.date||'';
-  const customFields=evDoc.data()?.staffCustomFields||[];
+  const customFields=cfDataFields(evDoc.data()?.staffCustomFields||[]);
   const sorted=getSorted('staffTableBody',allStaff);
   let csv='姓名,性別,生日,手機,Email,身分證,備註'+customFields.map(f=>','+csvCell(f.label)).join('')+'\n';
   sorted.forEach(e=>{
     const cd=e.customData||{};
     csv+=[e.name,e.gender,e.birthday,e.phone,e.email,e.idNumber,e.note].map(csvCell).join(',');
-    customFields.forEach(f=>{let v=cd[f.id];if(f.type==='checkbox')v=v?'是':'否';csv+=','+csvCell(v!==undefined?v:'');});
+    customFields.forEach(f=>{csv+=','+csvCell(cfDisplayValue(f,cd[f.id]));});
     csv+='\n';
   });
   downloadCSV(csv,evFileName(evName,evDate)+'_工作人員_'+fmtFileDateTime()+'.csv');
@@ -5617,9 +5914,11 @@ th[data-sort]:hover{color:var(--accent);}
       <div class="input-group"><label>欄位類型</label>
         <select id="cfType" class="input" onchange="onCfTypeChange()">
           <option value="text">文字</option>
-          <option value="select">下拉選單</option>
+          <option value="select">下拉選單（單選）</option>
+          <option value="multi">複選（勾選多項）</option>
           <option value="checkbox">是／否（勾選框）</option>
           <option value="yesno">是／否（下拉選單）</option>
+          <option value="section">區塊標題（分段用，不需要填寫）</option>
         </select>
       </div>
       <div class="input-group" id="cfOptionsRow" style="display:none">
@@ -5627,7 +5926,20 @@ th[data-sort]:hover{color:var(--accent);}
         <textarea id="cfOptions" class="input" rows="3" placeholder="S&#10;M&#10;L&#10;XL"></textarea>
       </div>
       <div class="input-group" id="cfAllowOtherRow" style="display:none"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="cfAllowOther"> 允許參加者輸入其他選項（下拉選單最後會多一個「其他」，選了會出現文字輸入框讓填表人自行輸入）</label></div>
+      <div id="cfMultiRow" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="input-group" style="margin:0"><label>最少選幾項</label><input id="cfMinSel" type="number" min="1" class="input" placeholder="不限"></div>
+          <div class="input-group" style="margin:0"><label>最多選幾項</label><input id="cfMaxSel" type="number" min="1" class="input" placeholder="不限"></div>
+        </div>
+        <div style="font-size:.72rem;color:var(--muted);margin:6px 0 12px">必填＝至少選一項。最少、最多留空代表不限；選填時可以都不選，有選就要符合最少／最多。</div>
+      </div>
       <div class="input-group" id="cfRequiredRow"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="cfRequired"> <span id="cfRequiredLabel">必填</span></label></div>
+      <div class="input-group" id="cfCondRow">
+        <label>顯示條件</label>
+        <select id="cfCondSrc" class="input" onchange="onCfCondSrcChange()"></select>
+        <div id="cfCondDetail" style="margin-top:8px"></div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:6px" id="cfCondHint">只能用排在這個欄位上面的欄位當條件。條件不成立時這個欄位會隱藏，也不檢查必填、不保存內容。</div>
+      </div>
       <div class="input-group" id="cfGroupsRow">
         <label>適用組別（不勾選＝全部組別皆顯示）</label>
         <div id="cfGroupsCheckboxes" style="display:flex;flex-wrap:wrap;gap:8px 16px;padding:8px 0"></div>
