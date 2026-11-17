@@ -1047,8 +1047,18 @@ function dtFieldsToTs(prefix) {
   if (!dateVal) return deleteField();
   const [y,mo,da]=dateVal.split('/').map(Number);
   const timeVal=document.getElementById(prefix+'Time').value; // "HH:MM" 或 ""
-  const [h,mi]=timeVal?timeVal.split(':').map(Number):[0,0];
+  // 沒填時間：開始＝當天 00:00；結束＝當天 23:59:59（結束日當天整天都還能報名）
+  if(!timeVal) return /End$/.test(prefix)
+    ? Timestamp.fromDate(new Date(y, mo-1, da, 23, 59, 59))
+    : Timestamp.fromDate(new Date(y, mo-1, da, 0, 0, 0));
+  const [h,mi]=timeVal.split(':').map(Number);
   return Timestamp.fromDate(new Date(y, mo-1, da, h||0, mi||0, 0));
+}
+// 拿掉物件裡的 deleteField() 標記：addDoc／setDoc（沒有 merge）不接受它，新增文件時用
+function stripDeleteFields(obj){
+  const DEL=deleteField();
+  Object.keys(obj).forEach(k=>{ const v=obj[k]; if(v&&typeof v.isEqual==='function'&&v.isEqual(DEL)) delete obj[k]; });
+  return obj;
 }
 window.saveEvent = async function() {
   // 儲存前驗證所有日期欄位格式（yyyy/mm/dd，留空視為未設定，格式錯誤則擋住）
@@ -1142,9 +1152,9 @@ window.saveEvent = async function() {
   if (id) { await updateDoc(doc(db,'systems',SYS,'events',id),data); showToast('已更新'); }
   else {
     data.createdAt=serverTimestamp(); data.groupNames=[];
-    // 新增時沒有選系列：不要寫入 deleteField()（addDoc 不接受）
-    if(!data.seriesId||typeof data.seriesId!=='string'){ delete data.seriesId; delete data.seriesNo; }
-    else if(typeof data.seriesNo!=='number') delete data.seriesNo;
+    // 新增文件不能帶 deleteField()（空白的報名期間、沒選系列都會產生這個標記），
+    // 新增時直接拿掉這些欄位即可（本來就沒有值）
+    stripDeleteFields(data);
     await addDoc(collection(db,'systems',SYS,'events'),data);
     showToast('已新增');
   }
@@ -5274,7 +5284,7 @@ th[data-sort]:hover{color:var(--accent);}
               <input type="date" id="evRegStartDatePicker" style="display:none" onchange="if(this.value){const[y,m,d]=this.value.split('-');document.getElementById('evRegStartDate').value=y+'/'+m+'/'+d;this.value=''}">
             </div>
           </div>
-          <div class="input-group" style="margin:0"><label>開始時間（hh:mm）</label><input id="evRegStartTime" type="time" class="input"></div>
+          <div class="input-group" style="margin:0"><label>開始時間（hh:mm，空白＝00:00）</label><input id="evRegStartTime" type="time" class="input"></div>
         </div>
         <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px">
           <div class="input-group" style="margin:0"><label>報名結束日期（yyyy/mm/dd）</label>
@@ -5284,7 +5294,7 @@ th[data-sort]:hover{color:var(--accent);}
               <input type="date" id="evRegEndDatePicker" style="display:none" onchange="if(this.value){const[y,m,d]=this.value.split('-');document.getElementById('evRegEndDate').value=y+'/'+m+'/'+d;this.value=''}">
             </div>
           </div>
-          <div class="input-group" style="margin:0"><label>結束時間（hh:mm）</label><input id="evRegEndTime" type="time" class="input"></div>
+          <div class="input-group" style="margin:0"><label>結束時間（hh:mm，空白＝23:59）</label><input id="evRegEndTime" type="time" class="input"></div>
         </div>
         <div class="input-group" style="margin-top:12px"><label>報名總人數（0 或留空＝無限制）</label><input id="evRegCapacity" type="number" min="0" class="input" placeholder="0"></div>
         <div class="input-group" style="margin-top:12px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evShowCapacity" checked> 在參加者報名表單顯示報名總人數上限</label></div>
@@ -5310,7 +5320,7 @@ th[data-sort]:hover{color:var(--accent);}
               <input type="date" id="evStaffRegStartDatePicker" style="display:none" onchange="if(this.value){const[y,m,d]=this.value.split('-');document.getElementById('evStaffRegStartDate').value=y+'/'+m+'/'+d;this.value=''}">
             </div>
           </div>
-          <div class="input-group" style="margin:0"><label>開始時間（hh:mm）</label><input id="evStaffRegStartTime" type="time" class="input"></div>
+          <div class="input-group" style="margin:0"><label>開始時間（hh:mm，空白＝00:00）</label><input id="evStaffRegStartTime" type="time" class="input"></div>
         </div>
         <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px">
           <div class="input-group" style="margin:0"><label>報名結束日期（yyyy/mm/dd）</label>
@@ -5320,7 +5330,7 @@ th[data-sort]:hover{color:var(--accent);}
               <input type="date" id="evStaffRegEndDatePicker" style="display:none" onchange="if(this.value){const[y,m,d]=this.value.split('-');document.getElementById('evStaffRegEndDate').value=y+'/'+m+'/'+d;this.value=''}">
             </div>
           </div>
-          <div class="input-group" style="margin:0"><label>結束時間（hh:mm）</label><input id="evStaffRegEndTime" type="time" class="input"></div>
+          <div class="input-group" style="margin:0"><label>結束時間（hh:mm，空白＝23:59）</label><input id="evStaffRegEndTime" type="time" class="input"></div>
         </div>
       </div>
       <!-- 活動設定 -->
