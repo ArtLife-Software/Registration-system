@@ -11,23 +11,23 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
 import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, query, orderBy, where, serverTimestamp, writeBatch, runTransaction, Timestamp, deleteField } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
-  apiKey: "請貼上你自己 Firebase 專案的 apiKey",
-  authDomain: "你的專案id.firebaseapp.com",
-  projectId: "你的專案id",
-  storageBucket: "你的專案id.firebasestorage.app",
-  messagingSenderId: "請貼上 messagingSenderId",
-  appId: "請貼上 appId"
+  apiKey: "AIzaSyB7a1puWKl5WYC19PUnh-Di7ra70e862I8",
+  authDomain: "registration-system-6e296.firebaseapp.com",
+  projectId: "registration-system-6e296",
+  storageBucket: "registration-system-6e296.firebasestorage.app",
+  messagingSenderId: "561912063653",
+  appId: "1:561912063653:web:03fefeb99aa16885818f4c"
 };
 const app = initializeApp(firebaseConfig);
-// App Check：跟參加者/工作人員報名頁用同一組 reCAPTCHA v3 網站金鑰即可，
+// App Check：跟參加者/工作人員報名頁用同一組 Fraud Defense（reCAPTCHA Enterprise）網站金鑰即可，
 // 換成 Firebase Console→App Check 註冊應用程式拿到的金鑰。
 initializeAppCheck(app, {
-  provider: new ReCaptchaV3Provider('RECAPTCHA_V3_SITE_KEY_PLACEHOLDER'),
+  provider: new ReCaptchaEnterpriseProvider('RECAPTCHA_ENTERPRISE_SITE_KEY_PLACEHOLDER'),
   isTokenAutoRefreshEnabled: true
 });
 const db = getFirestore(app);
