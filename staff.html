@@ -205,34 +205,76 @@ function ensureAuth(){
 // 區塊標題（type:'section'）：到下一個區塊標題前的欄位都屬於它；區塊隱藏時，裡面的欄位全部隱藏。
 // 隱藏的欄位不顯示、不驗證、不送出（跟「適用組別」一樣）；條件來源被隱藏時，依賴它的欄位也隱藏。
 // ctx：{ groupId, gender, age }；values：{ 欄位id: 目前的值 }
-function cfVisibility(fields, values, ctx){
+// 單一條件是否成立。srcVisible：來源欄位是否顯示中；v：來源欄位的值
+function cfCondMatch(c, ctx, srcVisible, v){
+  if(!c||!c.src) return true;
+  if(c.src==='__gender') return (c.val||[]).includes(ctx.gender||'');
+  if(c.src==='__age'){
+    const a=ctx.age; if(a===null||a===undefined||isNaN(a)) return false;
+    const mn=c.val&&c.val.min, mx=c.val&&c.val.max;
+    return (!(mn>0)||a>=mn)&&(!(mx>0)||a<=mx);
+  }
+  if(!srcVisible) return false; // 來源被隱藏、排在下面或已刪除
+  switch(c.op){
+    case 'in': return typeof v==='string'&&(c.val||[]).includes(v);
+    case 'has': return Array.isArray(v)&&v.some(x=>(c.val||[]).includes(x));
+    case 'checked': return v===true;
+    case 'unchecked': return v!==true;
+    case 'filled': return Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v);
+    case 'empty': return !(Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v));
+    default: return true;
+  }
+}
+function cfGroupOk(f, ctx){ return !f.groups||!f.groups.length||f.groups.includes(ctx.groupId||''); }
+// fixed：直接指定某些欄位顯示與否（多人報名的個人修改：共用欄位的顯示狀態以整批為準）
+function cfVisibility(fields, values, ctx, fixed){
   const vis={}; let sec=true;
-  const groupOk=f=>!f.groups||!f.groups.length||f.groups.includes(ctx.groupId||'');
-  const condOk=c=>{
-    if(!c||!c.src) return true;
-    if(c.src==='__gender') return (c.val||[]).includes(ctx.gender||'');
-    if(c.src==='__age'){
-      const a=ctx.age; if(a===null||a===undefined||isNaN(a)) return false;
-      const mn=c.val&&c.val.min, mx=c.val&&c.val.max;
-      return (!(mn>0)||a>=mn)&&(!(mx>0)||a<=mx);
-    }
-    if(!vis[c.src]) return false; // 來源被隱藏、排在下面或已刪除
-    const v=values[c.src];
-    switch(c.op){
-      case 'in': return typeof v==='string'&&(c.val||[]).includes(v);
-      case 'has': return Array.isArray(v)&&v.some(x=>(c.val||[]).includes(x));
-      case 'checked': return v===true;
-      case 'unchecked': return v!==true;
-      case 'filled': return Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v);
-      case 'empty': return !(Array.isArray(v)?v.length>0:(typeof v==='string'?!!v.trim():!!v));
-      default: return true;
-    }
-  };
   for(const f of fields){
-    if(f.type==='section'){ sec=groupOk(f)&&condOk(f.cond); vis[f.id]=sec; continue; }
-    vis[f.id]=sec&&groupOk(f)&&condOk(f.cond);
+    if(fixed&&Object.prototype.hasOwnProperty.call(fixed,f.id)){ vis[f.id]=!!fixed[f.id]; if(f.type==='section') sec=vis[f.id]; continue; }
+    const ok=cfGroupOk(f,ctx)&&cfCondMatch(f.cond,ctx,f.cond&&vis[f.cond.src],f.cond&&values[f.cond.src]);
+    if(f.type==='section'){ sec=ok; vis[f.id]=sec; continue; }
+    vis[f.id]=sec&&ok;
   }
   return vis;
+}
+// ── 多人報名 ──
+// 區塊標題可設 scope:'shared'（共同填寫一次）：從它到下一個區塊標題之間都是共用欄位；
+// 第一個區塊標題之前，或區塊沒設 shared＝每人各填。
+function cfSharedIds(fields){
+  const s=new Set(); let sh=false;
+  for(const f of fields||[]){ if(f.type==='section') sh=f.scope==='shared'; if(sh) s.add(f.id); }
+  return s;
+}
+// persons：[{ values, ctx }]（每人的欄位值與性別／年齡／組別）；shared：共用欄位的值
+// 共用欄位：任一人符合就顯示；每人欄位：依各自資料判斷，條件來源是共用欄位時用共用的值。
+// 回傳 { shared:{id:bool}, persons:[{id:bool}] }
+function cfVisibilityMulti(fields, shared, persons){
+  const sids=cfSharedIds(fields); const visS={}; let secS=true;
+  const P=persons.map(()=>({vis:{}, sec:true}));
+  const ok=(f,i)=>{
+    const p=persons[i], c=f.cond, src=c&&c.src, isS=src&&sids.has(src);
+    return cfGroupOk(f,p.ctx)&&cfCondMatch(c,p.ctx,src&&(isS?visS[src]:P[i].vis[src]),src&&(isS?shared[src]:p.values[src]));
+  };
+  for(const f of fields||[]){
+    if(sids.has(f.id)){
+      const any=persons.some((p,i)=>ok(f,i));
+      if(f.type==='section'){ secS=any; visS[f.id]=any; } else visS[f.id]=secS&&any;
+    } else {
+      persons.forEach((p,i)=>{ const r=ok(f,i); if(f.type==='section'){ P[i].sec=r; P[i].vis[f.id]=r; } else P[i].vis[f.id]=P[i].sec&&r; });
+    }
+  }
+  return {shared:visS, persons:P.map(x=>x.vis)};
+}
+// 多人報名的個人修改：共用欄位的顯示狀態以「整批存下來的資料」為準（有存值＝顯示中）
+function cfFixedFromStored(fields, stored){
+  const sids=cfSharedIds(fields), fixed={}; let secId=null;
+  for(const f of fields||[]){
+    if(!sids.has(f.id)){ secId=null; continue; }
+    if(f.type==='section'){ secId=f.id; fixed[f.id]=false; continue; }
+    fixed[f.id]=Object.prototype.hasOwnProperty.call(stored||{},f.id);
+    if(fixed[f.id]&&secId) fixed[secId]=true;
+  }
+  return fixed;
 }
 // 表單、列表、匯出用的「有資料的欄位」（排除區塊標題）
 function cfDataFields(fields){ return (fields||[]).filter(f=>f.type!=='section'); }
@@ -251,10 +293,10 @@ function cfReadRaw(id, f){
   return v;
 }
 // 依目前填寫內容切換欄位的顯示；回傳 vis（欄位id → 是否顯示）
-function cfApplyVisibility(fields, idPrefix, rowPrefix, ctx){
+function cfApplyVisibility(fields, idPrefix, rowPrefix, ctx, fixed){
   const values={};
   (fields||[]).forEach(f=>{ if(f.type!=='section') values[f.id]=cfReadRaw(idPrefix+f.id,f); });
-  const vis=cfVisibility(fields||[], values, ctx);
+  const vis=cfVisibility(fields||[], values, ctx, fixed);
   (fields||[]).forEach(f=>{ const row=document.getElementById(rowPrefix+f.id); if(row) row.style.display=vis[f.id]?'':'none'; });
   return vis;
 }
