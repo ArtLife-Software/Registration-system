@@ -998,6 +998,7 @@ window.showAddEvent = async function() {
   document.getElementById('evCustomBibRangeMin').value='';
   document.getElementById('evCustomBibRangeMax').value='';
   fillEventSeriesFields(null);
+  document.getElementById('evDeleteBtn').style.display='none';
   document.getElementById('eventModal').style.display='flex';
 }
 window.editEvent = async function(id) {
@@ -1027,6 +1028,7 @@ window.editEvent = async function(id) {
   document.getElementById('evCustomBibRangeMin').value=ev.customBibRangeMin||'';
   document.getElementById('evCustomBibRangeMax').value=ev.customBibRangeMax||'';
   fillEventSeriesFields(ev);
+  document.getElementById('evDeleteBtn').style.display='';
   document.getElementById('eventModal').style.display='flex';
 }
 // 輔助：把 Timestamp 拆填入 日期文字框（yyyy/mm/dd）+ 時間欄位（type=time）
@@ -1054,6 +1056,48 @@ function dtFieldsToTs(prefix) {
   const [h,mi]=timeVal.split(':').map(Number);
   return Timestamp.fromDate(new Date(y, mo-1, da, h||0, mi||0, 0));
 }
+// ── 刪除活動 ──
+// 連同活動底下的所有資料一起刪除：組別、報名記錄、工作人員、號碼標記、報到記錄、獎狀設定。
+// 參加者主檔（系統內共用的個人資料）不會刪除。有報名資料時，要輸入活動名稱才能刪除，避免誤刪。
+const EVENT_SUBCOLLECTIONS=[
+  {key:'runners',label:'報名記錄'},{key:'staff',label:'工作人員報名'},{key:'groups',label:'組別'},
+  {key:'checkins',label:'報到記錄'},{key:'bibs',label:'號碼標記'},{key:'settings',label:'獎狀設定'},
+];
+window.deleteEvent=async function(){
+  const id=document.getElementById('eventDocId').value; if(!id)return;
+  const btn=document.getElementById('evDeleteBtn');
+  btn.disabled=true;
+  try{
+    const evSnap=await getDoc(doc(db,'systems',SYS,'events',id));
+    if(!evSnap.exists()){ showToast('找不到這個活動，可能已被刪除','error'); closeModal('eventModal'); loadEvents(); return; }
+    const name=evSnap.data().name||'';
+    const snaps=await Promise.all(EVENT_SUBCOLLECTIONS.map(c=>getDocs(collection(db,'systems',SYS,'events',id,c.key))));
+    const counts=EVENT_SUBCOLLECTIONS.map((c,i)=>({...c,n:snaps[i].size}));
+    const entries=counts[0].n, staffN=counts[1].n;
+    const detail=counts.filter(c=>c.n&&['runners','staff','groups'].includes(c.key)).map(c=>c.label+' '+c.n+' 筆').join('、');
+    const msg='確定刪除活動「'+name+'」？\n\n'+(detail?'會一起刪除：'+detail+'，以及報到記錄、獎狀設定。\n':'')
+      +'參加者資料（個人主檔）不會刪除。刪除後無法復原。';
+    if(entries||staffN){
+      const typed=prompt(msg+'\n\n這個活動已有報名資料，請輸入活動名稱「'+name+'」確認刪除：');
+      if(typed===null) return;
+      if(typed.trim()!==name.trim()){ showToast('活動名稱不符，未刪除','error'); return; }
+    }else if(!confirm(msg)) return;
+    btn.textContent='刪除中...';
+    // 一個批次最多 500 筆寫入，分批刪除
+    const refs=[];
+    snaps.forEach(sn=>sn.docs.forEach(d=>refs.push(d.ref)));
+    for(let i=0;i<refs.length;i+=400){
+      const batch=writeBatch(db);
+      refs.slice(i,i+400).forEach(r=>batch.delete(r));
+      await batch.commit();
+    }
+    await deleteDoc(doc(db,'systems',SYS,'events',id));
+    if(localStorage.getItem(lastEventKey())===id) localStorage.removeItem(lastEventKey());
+    showToast('已刪除活動「'+name+'」');
+    closeModal('eventModal'); loadEvents();
+  }catch(e){ showToast('刪除失敗：'+e.message,'error'); }
+  finally{ btn.disabled=false; btn.textContent='刪除活動'; }
+};
 // 拿掉物件裡的 deleteField() 標記：addDoc／setDoc（沒有 merge）不接受它，新增文件時用
 function stripDeleteFields(obj){
   const DEL=deleteField();
@@ -1356,12 +1400,14 @@ window.manageCustomFields=async function(eid,ename,type){
   document.getElementById('cfEventName').textContent=ename+(type==='staff'?' — 工作人員表單':' — 參加者表單');
   document.getElementById('cfHint').textContent=type==='staff'
     ?'標準欄位中，姓名、性別、生日、身分證字號、備註一律顯示；手機號碼、Email 的顯示與必填可在下方「標準欄位」調整。以下為此活動額外新增的自訂欄位，會出現在工作人員報名表單、後台工作人員分頁與匯出 CSV 中。'
-    :'標準欄位中，編號、組別、ID、姓名、性別、生日、備註一律顯示；手機號碼、Email、身分證字號的顯示與必填可在下方「標準欄位」調整。以下為此活動額外新增的自訂欄位可設定「適用組別」，只有指定組別的參加者報名時才會看到，會出現在參加者報名表單、報名管理表格與匯出 CSV 中。';
+    :'標準欄位中，姓名、性別、生日、備註一律顯示；組別、手機號碼、Email、身分證字號的顯示與必填可在下方「標準欄位」調整（活動沒有組別時一律不顯示組別）。編號與 ID 由系統自動產生，不在表單上填寫，報名成功後才會顯示（活動開放自選號碼時，才會有號碼欄位）。以下為此活動額外新增的自訂欄位可設定「適用組別」，只有指定組別的參加者報名時才會看到，會出現在參加者報名表單、報名管理表格與匯出 CSV 中。';
   // 身分證字號只有參加者表單才有，工作人員表單不用顯示這一列
   const idRowDisplay=curCFType==='staff'?'none':'';
   document.getElementById('cfFS_idNumber_row_label').style.display=idRowDisplay;
   document.getElementById('cfFS_idNumber_row_show').style.display=idRowDisplay;
   document.getElementById('cfFS_idNumber_row_req').style.display=idRowDisplay;
+  ['label','show','req'].forEach(k=>{document.getElementById('cfFS_group_row_'+k).style.display=idRowDisplay;});
+  document.getElementById('cfFS_group_note').style.display=idRowDisplay;
   // 工作人員沒有「組別」這個概念，適用組別設定只給參加者表單用
   if(curCFType==='runner'){
     curCFGroups=await getSortedGroupList(eid);
@@ -1382,6 +1428,11 @@ window.manageCustomFields=async function(eid,ename,type){
   document.getElementById('cfBannerLinkText').value=evDocForBanner.data()?.[linkTextKey]||'';
   document.getElementById('cfBannerLinkUrl').value=evDocForBanner.data()?.[linkUrlKey]||'';
   await loadFieldSettings();
+  // 活動沒有組別：組別一律不顯示，設定無作用，停用這一列
+  const noGroups=curCFType==='runner'&&!curCFGroups.length;
+  document.getElementById('cfFS_group_show').disabled=noGroups;
+  document.getElementById('cfFS_group_req').disabled=noGroups||!document.getElementById('cfFS_group_show').checked;
+  document.getElementById('cfFS_group_row_label').innerHTML=noGroups?'組別 <span style="color:var(--muted);font-size:.7rem">（此活動沒有組別，不顯示）</span>':'組別';
   await loadCustomFields();
   document.getElementById('customFieldsModal').style.display='flex';
 }
@@ -1409,10 +1460,11 @@ async function loadFieldSettings(){
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const key=curCFType==='staff'?'staffFieldSettings':'fieldSettings';
   const fs=evDoc.data()?.[key]||{};
-  const fields=curCFType==='staff'?['phone','email']:['phone','email','idNumber'];
+  const fields=curCFType==='staff'?['phone','email']:['phone','email','idNumber','group'];
   fields.forEach(f=>{
     const show=fs[f]?.show!==false;
-    const req=fs[f]?.required===true;
+    // 組別沒設定過＝必選（跟原本一樣）；其他欄位沒設定過＝選填
+    const req=f==='group'?(show&&fs[f]?.required!==false):fs[f]?.required===true;
     document.getElementById('cfFS_'+f+'_show').checked=show;
     document.getElementById('cfFS_'+f+'_req').checked=req;
     document.getElementById('cfFS_'+f+'_req').disabled=!show;
@@ -1420,7 +1472,7 @@ async function loadFieldSettings(){
 }
 window.saveFieldSettings=async function(){
   const key=curCFType==='staff'?'staffFieldSettings':'fieldSettings';
-  const fields=curCFType==='staff'?['phone','email']:['phone','email','idNumber'];
+  const fields=curCFType==='staff'?['phone','email']:['phone','email','idNumber','group'];
   const fs={};
   fields.forEach(f=>{
     fs[f]={
@@ -2177,6 +2229,16 @@ async function loadEntryGroupOptions(selectedId){
   curEntryGroupMap={};
   if(!eventId)return;
   const gList=await getSortedGroupList(eventId);
+  // 組別選填（或活動沒有組別）時，多一個「不選組別」；後台管理員一律可以看到組別欄位，方便修正資料
+  const gs=curEntryFS.group||{};
+  const required=gList.length>0&&gs.show!==false&&gs.required!==false;
+  const star=document.getElementById('eGroupStar'); if(star)star.style.display=required?'':'none';
+  // 活動沒有任何組別：不顯示組別欄位（編輯時原本就有已刪除組別的例外，下面會再打開）
+  document.getElementById('eGroupRow').style.display=gList.length?'':'none';
+  if(!required){
+    const o=document.createElement('option'); o.value=''; o.textContent='不選組別';
+    sel.appendChild(o);
+  }
   gList.forEach(g=>{
     curEntryGroupMap[g.id]=g;
     const o=document.createElement('option');
@@ -2185,7 +2247,11 @@ async function loadEntryGroupOptions(selectedId){
     if(g.id===selectedId)o.selected=true;
     sel.appendChild(o);
   });
-  if(!gList.length)sel.innerHTML='<option value="未分組">未分組</option>';
+  // 編輯時，原本的組別已被刪除：保留原值，避免存檔時被改掉
+  if(selectedId&&!gList.some(g=>g.id===selectedId)){
+    const o=document.createElement('option'); o.value=selectedId; o.textContent='（已刪除的組別）'; o.selected=true; sel.appendChild(o);
+    document.getElementById('eGroupRow').style.display='';
+  }
 }
 
 // ── 年齡計算（以活動日期為基準）──
@@ -2276,7 +2342,9 @@ function updateAdminParentalBlock(){
 }
 
 window.updateAdminParentalBlock=updateAdminParentalBlock;
+let curEntryFS={}; // 目前活動的 fieldSettings（組別是否必選等）
 function applyEntryFieldSettings(fs){
+  curEntryFS=fs||{};
   const fields=[
     {key:'phone', rowId:'ePhoneRow', labelId:'ePhoneLabel', defaultLabel:'手機號碼（09開頭10碼）'},
     {key:'email', rowId:'eEmailRow', labelId:'eEmailLabel', defaultLabel:'E-Mail'},
@@ -2418,7 +2486,9 @@ window.saveEntry=async function(){
   let uniqueId=document.getElementById('entryUniqueId').value;
   const bibNumber=document.getElementById('eBib').value.trim();
   const groupId=document.getElementById('eGroup').value;
-  const group=curEntryGroupMap[groupId]?.name||groupId; // 名稱只做顯示/CSV快取，關聯一律用 groupId
+  const group=curEntryGroupMap[groupId]?.name||''; // 名稱只做顯示/CSV快取，關聯一律用 groupId
+  const gsCfg=curEntryFS.group||{};
+  if(!groupId&&Object.keys(curEntryGroupMap).length&&gsCfg.show!==false&&gsCfg.required!==false){showToast('請選擇組別','error');return;}
   const name=document.getElementById('eName').value.trim();
   const gender=document.getElementById('eGender').value;
   const birthday=document.getElementById('eBirthday').value.trim();
@@ -2623,7 +2693,7 @@ function renderEntryInfoInto(el,info){
   html+='<div style="font-size:.82rem;color:var(--muted);margin-bottom:16px">'+esc(info.eventName)+(info.eventDate?'（'+esc(info.eventDate)+'）':'')+'</div>';
   html+='<div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
   html+='<strong style="font-size:1.05rem">'+esc(info.name)+'</strong>';
-  html+='<span class="badge">'+esc(info.group||'-')+'</span>';
+  if(info.group)html+='<span class="badge">'+esc(info.group)+'</span>';
   html+='</div>';
   html+='<div style="margin:14px 0">';
   html+='<div style="font-size:.75rem;color:var(--muted);margin-bottom:2px">您的報名編號</div>';
@@ -2931,7 +3001,7 @@ function renderStatsContent(s){
   groups.forEach(g=>{ html+=groupCard(g.name, entries.filter(e=>e.groupId===g.id), g.groupCapacity||0); });
   // 組別已被刪除、但報名資料還在的人，另外列一張卡片，總數才對得起來
   const orphans=entries.filter(e=>!groupIds.has(e.groupId));
-  if(orphans.length) html+=groupCard('（組別已刪除或未設定）', orphans, 0);
+  if(orphans.length) html+=groupCard('未分組（沒有選組別，或組別已刪除）', orphans, 0);
   if(!groups.length&&!entries.length) html+='<p style="color:var(--muted);text-align:center;padding:24px">這場活動還沒有組別與報名資料</p>';
 
   content.innerHTML=html;
@@ -5390,7 +5460,7 @@ th[data-sort]:hover{color:var(--accent);}
              請在活動列表點選對應按鈕開啟；宣傳圖片設定也已移至該處 -->
       </div>
     </form>
-    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('eventModal')">取消</button><button class="btn btn-primary" onclick="saveEvent()">儲存</button></div>
+    <div class="modal-actions"><button class="btn btn-danger" id="evDeleteBtn" style="margin-right:auto;display:none" onclick="deleteEvent()">刪除活動</button><button class="btn btn-ghost" onclick="closeModal('eventModal')">取消</button><button class="btn btn-primary" onclick="saveEvent()">儲存</button></div>
   </div>
 </div>
 
@@ -5521,6 +5591,9 @@ th[data-sort]:hover{color:var(--accent);}
       <div style="font-size:.75rem;font-weight:700;color:var(--muted);margin-bottom:10px;letter-spacing:.04em">標準欄位</div>
       <div style="display:grid;grid-template-columns:auto 1fr 1fr;gap:6px 12px;align-items:center;font-size:.78rem">
         <div style="color:var(--muted)">欄位</div><div style="color:var(--muted);text-align:center">顯示</div><div style="color:var(--muted);text-align:center">必填</div>
+        <div style="color:var(--text)" id="cfFS_group_row_label">組別</div>
+        <div style="text-align:center" id="cfFS_group_row_show"><input type="checkbox" id="cfFS_group_show" onchange="onFsShowChange('group')" checked></div>
+        <div style="text-align:center" id="cfFS_group_row_req"><input type="checkbox" id="cfFS_group_req" checked></div>
         <div style="color:var(--text)">手機號碼</div>
         <div style="text-align:center"><input type="checkbox" id="cfFS_phone_show" onchange="onFsShowChange('phone')" checked></div>
         <div style="text-align:center"><input type="checkbox" id="cfFS_phone_req"></div>
@@ -5531,7 +5604,7 @@ th[data-sort]:hover{color:var(--accent);}
         <div style="text-align:center" id="cfFS_idNumber_row_show"><input type="checkbox" id="cfFS_idNumber_show" onchange="onFsShowChange('idNumber')" checked></div>
         <div style="text-align:center" id="cfFS_idNumber_row_req"><input type="checkbox" id="cfFS_idNumber_req"></div>
       </div>
-      <div style="font-size:.72rem;color:var(--muted);margin-top:8px">隱藏時欄位不顯示也不驗證；顯示時可選必填或選填。</div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:8px">隱藏時欄位不顯示也不驗證；顯示時可選必填或選填。<span id="cfFS_group_note"><br>組別：活動沒有建立組別時一律不顯示。組別隱藏或沒選組別的報名者，不適用任何組別限制（性別、年齡、名額、邀請碼、家長陪同、組別號碼規則），只顯示「適用全部組別」的自訂欄位。</span></div>
       <button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveFieldSettings()">儲存標準欄位設定</button>
     </div>
     <div id="cfList" style="margin-bottom:12px"></div>
@@ -5584,7 +5657,7 @@ th[data-sort]:hover{color:var(--accent);}
       </div>
       <div id="eBibAvailPanel" style="display:none;margin-top:6px;padding:8px;background:var(--surface2);border-radius:8px"></div>
     </div>
-    <div class="input-group"><label>組別 <span class="required-star">*</span></label><select id="eGroup" class="input" onchange="onEntryGroupChange()"></select>
+    <div class="input-group" id="eGroupRow"><label>組別 <span class="required-star" id="eGroupStar">*</span></label><select id="eGroup" class="input" onchange="onEntryGroupChange()"></select>
       <div id="eGroupNote" style="font-size:.8rem;margin-top:6px;color:var(--text);white-space:pre-line"></div>
       <div id="eGroupHint" style="font-size:.75rem;margin-top:4px;min-height:16px;color:var(--muted)"></div>
     </div>

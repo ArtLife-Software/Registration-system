@@ -524,16 +524,14 @@ async function selectSignupEvent(eventId, keepWrapper){
     formHtml+=infoCardHtml;
   }
   formHtml+='<div class="card">';
-  formHtml+='<div class="input-group"><label>組別 <span class="required-star">*</span></label><select id="suGroup" class="input" onchange="onSignupGroupChange()">';
-  if(groupDocs.length){
-    groupDocs.forEach(g=>{formHtml+='<option value="'+esc(g.id)+'">'+esc(g.name)+'</option>';});
-  }else{
-    formHtml+='<option value="未分組">未分組</option>';
+  const gCfg=groupFieldCfg(curSignupEvent, groupDocs.length);
+  window._signupGroupCfg=gCfg;
+  formHtml+=groupSelectHtml('suGroup', groupDocs, gCfg, '', 'onSignupGroupChange()', '');
+  if(gCfg.show){
+    formHtml+='<div id="suGroupNote" style="font-size:.8rem;margin-top:6px;color:var(--text);white-space:pre-line"></div>'
+      +'<div id="suGroupHint" style="font-size:.75rem;margin-top:4px;min-height:16px;color:var(--muted)"></div>'
+      +'</div>';
   }
-  formHtml+='</select>'
-    +'<div id="suGroupNote" style="font-size:.8rem;margin-top:6px;color:var(--text);white-space:pre-line"></div>'
-    +'<div id="suGroupHint" style="font-size:.75rem;margin-top:4px;min-height:16px;color:var(--muted)"></div>'
-    +'</div>';
   // 邀請碼（由 onSignupGroupChange 動態顯示）
   formHtml+='<div class="input-group" id="suInviteCodeRow" style="display:none"><label>邀請碼 <span class="required-star">*</span></label>'
     +'<input id="suInviteCode" type="text" class="input" placeholder="請輸入邀請碼">'
@@ -639,6 +637,23 @@ function refreshSignupBibField(g){
   const panel=document.getElementById('suBibAvailPanel');
   if(panel)panel.style.display='none';
 }
+// ── 組別欄位設定（活動 fieldSettings.group）──
+// show：是否顯示組別；required：是否必選。活動沒有任何組別時一律不顯示。舊活動沒設定＝顯示且必選。
+function groupFieldCfg(ev, groupCount){
+  const gs=(ev&&ev.fieldSettings&&ev.fieldSettings.group)||{};
+  const show=gs.show!==false&&groupCount>0;
+  return {show, required:show&&gs.required!==false};
+}
+// 組別下拉選單：必選＝直接選第一個組別（跟原本一樣）；選填＝多一個「不選組別」；不顯示＝隱藏，只帶 keepId（修改時沿用原本組別）
+function groupSelectHtml(selectId, groupList, cfg, selectedId, onchange, keepId){
+  if(!cfg.show){
+    return '<select id="'+selectId+'" style="display:none"><option value="'+esc(keepId||'')+'"></option></select>';
+  }
+  let h='<div class="input-group"><label>組別'+(cfg.required?' <span class="required-star">*</span>':'（選填）')+'</label><select id="'+selectId+'" class="input" onchange="'+onchange+'">';
+  if(!cfg.required) h+='<option value="">不選組別</option>';
+  groupList.forEach(g=>{h+='<option value="'+esc(g.id)+'"'+(g.id===selectedId?' selected':'')+'>'+esc(g.name)+'</option>';});
+  return h+'</select>';
+}
 // ── 組別切換時動態顯示限制欄位 ──
 window.onSignupGroupChange=function(){
   const group=document.getElementById('suGroup')?.value;
@@ -653,7 +668,15 @@ window.onSignupGroupChange=function(){
   // 家長區塊的顯示與旗標一律交給 updateParentalBlock 統一維護
   //（放在提早 return 之前，「未選組別」時旗標也會被正確重設為 false）
   updateParentalBlock();
-  if(!g||!hint)return;
+  // 自訂欄位：依「適用組別」設定切換顯示（groups 未設定或空陣列＝全部組別皆顯示；沒選組別時只顯示全部組別適用的欄位）
+  curSignupCustomFields.forEach(f=>{
+    const row=document.getElementById('su_cf_row_'+f.id);
+    if(!row)return;
+    const applicable=!f.groups||!f.groups.length||f.groups.includes(group);
+    row.style.display=applicable?'':'none';
+  });
+  if(!g){ if(hint)hint.textContent=''; return; }
+  if(!hint)return;
   // 限制摘要
   const hints=[];
   if(g.genderLimit)hints.push('限'+g.genderLimit+'性');
@@ -665,13 +688,6 @@ window.onSignupGroupChange=function(){
   hint.style.whiteSpace='pre-line';
   // 邀請碼
   if(inviteRow&&groupHasInvite(g))inviteRow.style.display='';
-  // 自訂欄位：依「適用組別」設定切換顯示（groups 未設定或空陣列＝全部組別皆顯示）
-  curSignupCustomFields.forEach(f=>{
-    const row=document.getElementById('su_cf_row_'+f.id);
-    if(!row)return;
-    const applicable=!f.groups||!f.groups.length||f.groups.includes(group);
-    row.style.display=applicable?'':'none';
-  });
 }
 
 // 依目前填寫的生日判斷是否需要顯示家長聲明區塊，並更新模組變數 curSignupNeedsParental
@@ -1000,6 +1016,7 @@ window.submitSignup=async function(){
   const idNumber=(fs.idNumber?.show!==false)?document.getElementById('suIdNumber')?.value.trim()||'':'';
   const note=document.getElementById('suNote').value.trim();
 
+  if(window._signupGroupCfg?.required&&!group){showToast('請選擇組別','error');return;}
   if(!name){showToast('請填寫姓名','error');return;}
   if(!gender){showToast('請選擇性別','error');return;}
   if(!birthday){setFieldError('suBirthday',true);showToast('請填寫生日','error');return;}
@@ -1203,7 +1220,7 @@ function renderRegInfo(el,info){
   html+='<div style="font-size:.82rem;color:var(--muted);margin-bottom:16px">'+esc(info.eventName||'')+(info.eventDate?'（'+esc(info.eventDate)+'）':'')+'</div>';
   html+='<div class="runner-card-header" style="justify-content:center">';
   html+='<strong style="font-size:1.05rem">'+esc(info.name||'')+'</strong>';
-  html+='<span class="badge">'+esc(info.group||'-')+'</span>';
+  if(info.group)html+='<span class="badge">'+esc(info.group)+'</span>';
   html+='</div>';
   html+='<div style="margin:14px 0">';
   html+='<div style="font-size:.75rem;color:var(--muted);margin-bottom:2px">您的報名編號</div>';
@@ -1587,12 +1604,12 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   if(emailShow)html+='<div class="input-group"><label>E-Mail'+(emailReq?' <span class="required-star">*</span>':'')+'</label><input id="'+cardId+'_eEmail" type="email" class="input" value="'+esc(r.email||'')+'" oninput="applyHalf(this)" onblur="setFieldError(\''+cardId+'_eEmail\',!validateEmail(this.value.trim()))"></div>';
   if(idShow)html+='<div class="input-group"><label>身分證字號（1英文+9數字）'+(idReq?' <span class="required-star">*</span>':'')+'</label><input id="'+cardId+'_eIdNumber" type="text" class="input" value="'+esc(r.idNumber||'')+'" oninput="applyHalf(this)" onblur="setFieldError(\''+cardId+'_eIdNumber\',!validateId(this.value.trim()))"></div>';
   html+='<div class="input-group"><label>備註</label><input id="'+cardId+'_eNote" type="text" class="input" value="'+esc(r.note||'')+'"></div>';
-  html+='<div class="input-group"><label>組別 <span class="required-star">*</span></label><select id="'+cardId+'_eGroup" class="input" onchange="updateEditParentalBlock(\''+cardId+'\',\''+gMapEsc+'\',\''+evDateEsc+'\');updateEditCustomFieldsVisibility(\''+cardId+'\');updateEditGroupInfo(\''+cardId+'\',\''+gMapEsc+'\')">';
-  groupList.forEach(g=>{html+='<option value="'+esc(g.id)+'"'+(g.id===e.groupId?' selected':'')+'>'+esc(g.name)+'</option>';});
-  html+='</select>'
-    +'<div id="'+cardId+'_eGroupNote" style="font-size:.8rem;margin-top:6px;color:var(--text);white-space:pre-line"></div>'
-    +'<div id="'+cardId+'_eGroupHint" style="font-size:.75rem;margin-top:4px;min-height:16px;color:var(--muted)"></div>'
-    +'</div>';
+  const eGCfg=groupFieldCfg(evDoc.data(), groupList.length);
+  html+=groupSelectHtml(cardId+'_eGroup', groupList, eGCfg, e.groupId||'', 'updateEditParentalBlock(\''+cardId+'\',\''+gMapEsc+'\',\''+evDateEsc+'\');updateEditCustomFieldsVisibility(\''+cardId+'\');updateEditGroupInfo(\''+cardId+'\',\''+gMapEsc+'\')', e.groupId||'');
+  // 組別隱藏時 groupSelectHtml 只產生隱藏的下拉選單；這兩個提示區塊仍要存在，給 updateEditGroupInfo 使用
+  html+='<div id="'+cardId+'_eGroupNote" style="font-size:.8rem;margin-top:6px;color:var(--text);white-space:pre-line'+(eGCfg.show?'':';display:none')+'"></div>'
+    +'<div id="'+cardId+'_eGroupHint" style="font-size:.75rem;margin-top:4px;min-height:16px;color:var(--muted)'+(eGCfg.show?'':';display:none')+'"></div>'
+    +(eGCfg.show?'</div>':'');
   // 家長陪同欄位
   html+='<div id="'+cardId+'_eParentalBlock" style="display:none">'
     +'<div style="padding:12px;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.3);border-radius:8px;margin-bottom:14px">'
@@ -1957,7 +1974,7 @@ async function buildLookupCard(e, eventId, evData){
   return '<div class="card">'+evTitle
     +'<div class="runner-card-header">'
     +'<strong style="font-size:1.05rem">'+esc(e.name||'')+'</strong>'
-    +'<span class="badge">'+esc(e.group||'-')+'</span>'
+    +(e.group?'<span class="badge">'+esc(e.group)+'</span>':'')
     +'<span class="badge">編號 '+esc(e.bibNumber||'-')+'</span>'
     +(e.cancelRequested?'<span class="badge" style="color:var(--accent)">申請取消中</span>':'')
     +'</div>'
