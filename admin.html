@@ -1467,7 +1467,7 @@ window.onEvBibModeChange=function(){
   }[mode];
   document.getElementById('evBibModeHint').innerHTML=esc(hint)
     +'<br>號碼登記表：同系列中排在本期前面、報名已經結束的活動，從最新一期往舊期找；同一人以最新一期的號碼為準，同一個號碼被不同人用過只算最新的那個人。報名開始後第一次有人使用報名表時自動建立，之後不自動更新。'
-    +'<br>希望舊號碼一定沿用時，先考慮「固定沿用」，再考慮「優先沿用」＋「允許參加者自選號碼：否」。'
+    +'<br>希望舊號碼一定沿用時，看要不要收新人：只開放舊成員，用「固定沿用」；也要收新人，用「優先沿用」並把號碼範圍設得夠大（新號碼不會用完，舊號碼就不會被新人拿走）。號碼範圍不能放大的話，就只能用「固定沿用」。'
     +(mode!=='none'&&!inSeries?'<br><span style="color:var(--red)">這個活動沒有加入系列，編號模式不會作用。</span>':'');
   document.getElementById('evBibRegRow').style.display=(mode!=='none'&&document.getElementById('eventDocId').value)?'':'none';
   document.getElementById('evBibOldCanChangeRow').style.display=mode==='prefer'?'flex':'none';
