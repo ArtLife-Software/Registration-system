@@ -1244,7 +1244,7 @@ window.createNextPeriod=async function(){
       'bibMode','bibOldCanChange','bibPadLength','bibPrefix','bibSuffix','bibNote','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax',
       'genderLimit','ageMin','ageMax','parentalAge','inviteCodeHash']));
     if(items.has('banner')) Object.assign(data, pick(['bannerUrl','bannerLinkText','bannerLinkUrl','staffBannerUrl','staffBannerLinkText','staffBannerLinkUrl']));
-    if(items.has('staffForm')) Object.assign(data, pick(['staffCustomFields','staffFieldSettings']));
+    if(items.has('staffForm')) Object.assign(data, pick(['staffCustomFields','staffFieldSettings','staffMultiSignup']));
     if(items.has('runnerForm')) Object.assign(data, pick(['fieldSettings']));
     const newRef=await addDoc(collection(db,'systems',SYS,'events'),data);
     // 組別：新的一期有新的組別 ID，自訂欄位的「適用組別」要跟著換成新 ID
@@ -1311,6 +1311,7 @@ window.showAddEvent = async function() {
   ['evRegStartTime','evRegEndTime','evStaffRegStartTime','evStaffRegEndTime'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('evRegCapacity').value='';
   document.getElementById('evMultiEnabled').checked=false; document.getElementById('evMultiMax').value=''; document.getElementById('evMultiMaxRow').style.display='none';
+  document.getElementById('evStaffMultiEnabled').checked=false; document.getElementById('evStaffMultiMax').value=''; document.getElementById('evStaffMultiMaxRow').style.display='none';
   setEvCheckinForm({});
   document.getElementById('evShowCapacity').checked=true;
   document.getElementById('evEntryCountDisplay').value='threshold';
@@ -1347,6 +1348,9 @@ window.editEvent = async function(id) {
   document.getElementById('evMultiEnabled').checked=ev.multiSignup?.enabled===true;
   document.getElementById('evMultiMax').value=ev.multiSignup?.max||'';
   document.getElementById('evMultiMaxRow').style.display=ev.multiSignup?.enabled===true?'':'none';
+  document.getElementById('evStaffMultiEnabled').checked=ev.staffMultiSignup?.enabled===true;
+  document.getElementById('evStaffMultiMax').value=ev.staffMultiSignup?.max||'';
+  document.getElementById('evStaffMultiMaxRow').style.display=ev.staffMultiSignup?.enabled===true?'':'none';
   setEvCheckinForm(ev);
   document.getElementById('evShowCapacity').checked=ev.showCapacity!==false;
   document.getElementById('evEntryCountDisplay').value=ev.entryCountDisplay||'threshold';
@@ -1399,7 +1403,7 @@ function dtFieldsToTs(prefix) {
 // 參加者主檔（系統內共用的個人資料）不會刪除。有報名資料時，要輸入活動名稱才能刪除，避免誤刪。
 const EVENT_SUBCOLLECTIONS=[
   {key:'runners',label:'報名記錄'},{key:'staff',label:'工作人員報名'},{key:'groups',label:'組別'},
-  {key:'checkins',label:'報到記錄'},{key:'bibs',label:'號碼標記'},{key:'settings',label:'獎狀設定'},{key:'batches',label:'多人報名批次'},{key:'bibRegistry',label:'號碼登記表'},
+  {key:'checkins',label:'報到記錄'},{key:'bibs',label:'號碼標記'},{key:'settings',label:'獎狀設定'},{key:'batches',label:'多人報名批次'},{key:'staffBatches',label:'工作人員多人報名批次'},{key:'bibRegistry',label:'號碼登記表'},
 ];
 window.deleteEvent=async function(){
   const id=document.getElementById('eventDocId').value; if(!id)return;
@@ -1599,9 +1603,13 @@ window.saveEvent = async function() {
   const multiMaxRaw=document.getElementById('evMultiMax').value.trim();
   const multiMax=multiMaxRaw===''?10:parseInt(multiMaxRaw,10);
   if(document.getElementById('evMultiEnabled').checked&&!(multiMax>=2&&multiMax<=50)){ showToast('多人報名每次最多人數要在 2～50 之間','error'); return; }
+  const sMultiRaw=document.getElementById('evStaffMultiMax').value.trim();
+  const sMultiMax=sMultiRaw===''?10:parseInt(sMultiRaw,10);
+  if(document.getElementById('evStaffMultiEnabled').checked&&!(sMultiMax>=2&&sMultiMax<=50)){ showToast('工作人員多人報名每次最多人數要在 2～50 之間','error'); return; }
   const data = {
     ...seriesFields,
     multiSignup:{enabled:document.getElementById('evMultiEnabled').checked, max:multiMax>=2&&multiMax<=50?multiMax:10},
+    staffMultiSignup:{enabled:document.getElementById('evStaffMultiEnabled').checked, max:sMultiMax>=2&&sMultiMax<=50?sMultiMax:10},
     checkin:{required:document.getElementById('evCheckinRequired').checked, bib:document.getElementById('evCheckinBib').checked, qr:document.getElementById('evCheckinQr').checked},
     queryRequireBib:document.getElementById('evQueryRequireBib').checked,
     name:document.getElementById('evName').value.trim(),
@@ -2018,7 +2026,7 @@ window.onCfTypeChange=function(){
   document.getElementById('cfMultiRow').style.display=t==='multi'?'block':'none';
   // 區塊標題：沒有選項、必填；只有名稱、說明、顯示條件、適用組別
   document.getElementById('cfRequiredRow').style.display=t==='section'?'none':'';
-  document.getElementById('cfScopeRow').style.display=(t==='section'&&curCFType==='runner')?'':'none';
+  document.getElementById('cfScopeRow').style.display=t==='section'?'':'none';
   document.getElementById('cfCondHint').textContent=t==='section'
     ?'區塊標題到下一個區塊標題之間的欄位都屬於這個區塊；條件不成立時整個區塊一起隱藏。只能用排在上面的欄位當條件。'
     :'只能用排在這個欄位上面的欄位當條件。條件不成立時這個欄位會隱藏，也不檢查必填、不保存內容。';
@@ -2037,7 +2045,7 @@ window.saveCustomField=async function(){
   if(condRes.error){showToast(condRes.error,'error');return;}
   const field={id:'cf_'+Date.now()+'_'+Math.floor(Math.random()*1000), label, description, type, required:type==='section'?false:required};
   if(condRes.cond) field.cond=condRes.cond;
-  if(type==='section'&&curCFType==='runner'&&document.getElementById('cfScope').value==='shared') field.scope='shared';
+  if(type==='section'&&document.getElementById('cfScope').value==='shared') field.scope='shared';
   if(curCFType==='runner'){
     field.groups=[...document.querySelectorAll('.cfGroupChk:checked')].map(el=>el.dataset.group);
   }
@@ -2274,6 +2282,27 @@ function renderEntries(list){
   }).join('');
 }
 // ── 多人報名的批次：填表人資料與成員 ──
+window.showStaffBatchInfo=async function(code){
+  const eventId=document.getElementById('staffEventSelect').value;
+  const bSnap=await getDoc(doc(db,'systems',SYS,'events',eventId,'staffBatches',code));
+  const b=bSnap.exists()?bSnap.data():{};
+  const sb=b.submitter||{};
+  const members=allStaff.filter(e=>e.batchCode===code);
+  const sids=cfSharedIds(curStaffCustomFields);
+  const sharedFields=cfDataFields(curStaffCustomFields).filter(f=>sids.has(f.id)&&(b.sharedData||{})[f.id]!==undefined);
+  document.getElementById('batchInfoBody').innerHTML=
+    '<div style="font-size:.8rem;color:var(--muted)">工作人員批次代碼</div><div class="mono" style="font-size:1.2rem;font-weight:800;margin-bottom:10px">'+esc(code)+'</div>'
+    +(bSnap.exists()?'':'<div class="csv-hint">找不到這個批次的填表人資料</div>')
+    +'<div style="font-size:.85rem;line-height:1.8"><strong>填表人：</strong>'+esc(sb.name||'-')+'　'+esc(sb.phone||'-')+(sb.email?'　'+esc(sb.email):'')
+    +'<br><strong>送出時間：</strong>'+fmtDT(b.createdAt)+'　<strong>人數：</strong>'+members.length+(b.count&&b.count!==members.length?'（送出時 '+b.count+' 位）':'')+'</div>'
+    +(sharedFields.length?'<div style="margin-top:8px;font-size:.82rem"><strong>共同填寫</strong>'+sharedFields.map(f=>'<div>'+esc(f.label)+'：'+esc(cfDisplayValue(f,b.sharedData[f.id])||'-')+'</div>').join('')+'</div>':'')
+    +'<div style="margin-top:10px;font-size:.85rem"><strong>成員</strong>'+members.map(e=>'<div>'+esc(e.name||'')+'　'+esc(e.gender||'')+(e.cancelRequested?' ⚠️ 申請取消中':'')+'</div>').join('')+'</div>';
+  document.getElementById('batchInfoFilterBtn').onclick=()=>{
+    document.getElementById('staffSearchField').value='batchCode'; onStaffSearchFieldChange();
+    document.getElementById('staffSearchKw').value=code; doStaffSearch(); closeModal('batchInfoModal');
+  };
+  document.getElementById('batchInfoModal').style.display='flex';
+};
 window.showBatchInfo=async function(code){
   const eventId=document.getElementById('entryEventSelect').value;
   const bSnap=await getDoc(doc(db,'systems',SYS,'events',eventId,'batches',code));
@@ -3862,8 +3891,8 @@ window.loadStaff=async function(){
   refreshSearchFieldOptions('staffSearchField',cfDataFields(curStaffCustomFields));
   // 更新表頭
   const thead=document.getElementById('staffTableHead');
-  const baseHeads=['姓名','性別','生日','手機','Email','身分證','備註'];
-  const baseSortKeys=['name','gender','birthday','','','idNumber','note'];
+  const baseHeads=['批次','姓名','性別','生日','手機','Email','身分證','備註'];
+  const baseSortKeys=['batchCode','name','gender','birthday','','','idNumber','note'];
   thead.innerHTML='<th style="width:36px"><input type="checkbox" id="staffSelectAll" onchange="toggleSelectAll(\'staffTableBody\',\'staffSelectAll\',\'staffBatchDeleteBtn\',\'staffBatchRejectBtn\')"></th>'
     +baseHeads.map((h,i)=>baseSortKeys[i]
       ?'<th data-sort="'+baseSortKeys[i]+'" onclick="sortTable(\'staffTableBody\',\''+baseSortKeys[i]+'\')">'+h+'<span class="sort-icon"> ⇅</span></th>'
@@ -3879,7 +3908,7 @@ window.loadStaff=async function(){
 }
 function renderStaff(list){
   const tbody=document.getElementById('staffTableBody');
-  const totalCols=9+cfDataFields(curStaffCustomFields).length;
+  const totalCols=10+cfDataFields(curStaffCustomFields).length;
   if(!list.length){tbody.innerHTML='<tr><td colspan="'+totalCols+'" class="loading-cell">尚無工作人員資料</td></tr>';return;}
   const eventId=document.getElementById('staffEventSelect').value;
   tbody.innerHTML=list.map(e=>{
@@ -3893,6 +3922,7 @@ function renderStaff(list){
     const rejectBtn=e.cancelRequested?'<button class="btn btn-sm btn-ghost" onclick="rejectStaffCancelRequest(\''+e.id+'\')">駁回申請</button> ':'';
     return '<tr>'
       +'<td><input type="checkbox" class="row-cb" data-id="'+e.id+'" onchange="onRowCbChange(\'staffBatchDeleteBtn\',\'staffTableBody\',\'staffSelectAll\',\'staffBatchRejectBtn\')"></td>'
+      +'<td>'+(e.batchCode?'<a href="#" class="mono" style="color:var(--accent)" onclick="showStaffBatchInfo(\''+escJs(e.batchCode)+'\');return false">'+esc(e.batchCode)+'</a>':'-')+'</td>'
       +'<td>'+esc(e.name||'-')+cancelBadge+'</td>'
       +'<td>'+esc(e.gender||'-')+'</td>'
       +'<td>'+esc(e.birthday||'-')+'</td>'
@@ -3922,7 +3952,7 @@ window.doStaffSearch=function(){
   const filtered=allStaff.filter(e=>{
     const val=f=>(e[f]||'').toString().toLowerCase();
     if(field==='all'){
-      if(['name','phone','email','idNumber','note'].some(f=>val(f).includes(kw))) return true;
+      if(['name','phone','email','idNumber','note','batchCode'].some(f=>val(f).includes(kw))) return true;
       return cfDataFields(curStaffCustomFields).some(f=>cfVal(e,f).toLowerCase().includes(kw));
     }
     if(field==='gender') return (e.gender||'')===kw;
@@ -3939,6 +3969,7 @@ window.showAddStaff=async function(){
   const eventId=document.getElementById('staffEventSelect').value;
   if(!eventId){showToast('請先選擇活動','error');return;}
   document.getElementById('staffDocId').value='';
+  curStaffCfFixed=null;
   document.getElementById('staffUniqueId').value='';
   document.getElementById('staffRunnerSearch').value='';
   document.getElementById('staffRunnerResults').style.display='none';
@@ -3967,6 +3998,7 @@ window.editStaff=async function(docId){
   const eventId=document.getElementById('staffEventSelect').value;
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   applyStaffFieldSettings(evDoc.data()?.staffFieldSettings||{});
+  curStaffCfFixed=eDoc.batchCode?cfFixedFromStored(curStaffCustomFields,eDoc.customData||{}):null;
   renderStaffCustomFields(eDoc.customData||{});
   document.getElementById('staffModal').style.display='flex';
 }
@@ -3991,9 +4023,10 @@ function renderStaffCustomFields(values){
 }
 // 工作人員表單：依性別、生日與已填內容切換自訂欄位顯示（工作人員沒有組別）
 let curStaffEventDate='';
+let curStaffCfFixed=null; // 編輯多人報名的成員時：共同欄位的顯示狀態以整批存下來的資料為準
 function updateStaffCustomFieldsVisibility(){
   return cfApplyVisibility(curStaffCustomFields,'scfInput_','staffCfRow_',{groupId:'',gender:document.getElementById('sGender')?.value||'',
-    age:cfAgeFrom(document.getElementById('sBirthday')?.value.trim(), curStaffEventDate)});
+    age:cfAgeFrom(document.getElementById('sBirthday')?.value.trim(), curStaffEventDate)},curStaffCfFixed);
 }
 // 後台的報名、工作人員表單：任何輸入變動都重新判斷顯示條件
 ['input','change'].forEach(evt=>document.addEventListener(evt,e=>{
@@ -4139,10 +4172,10 @@ window.exportStaff=async function(){
   const evName=evDoc.data()?.name||'活動'; const evDate=evDoc.data()?.date||'';
   const customFields=cfDataFields(evDoc.data()?.staffCustomFields||[]);
   const sorted=getSorted('staffTableBody',allStaff);
-  let csv='姓名,性別,生日,手機,Email,身分證,備註'+customFields.map(f=>','+csvCell(f.label)).join('')+'\n';
+  let csv='批次代碼,姓名,性別,生日,手機,Email,身分證,備註'+customFields.map(f=>','+csvCell(f.label)).join('')+'\n';
   sorted.forEach(e=>{
     const cd=e.customData||{};
-    csv+=[e.name,e.gender,e.birthday,e.phone,e.email,e.idNumber,e.note].map(csvCell).join(',');
+    csv+=[e.batchCode||'',e.name,e.gender,e.birthday,e.phone,e.email,e.idNumber,e.note].map(csvCell).join(',');
     customFields.forEach(f=>{csv+=','+csvCell(cfDisplayValue(f,cd[f.id]));});
     csv+='\n';
   });
@@ -5895,6 +5928,7 @@ th[data-sort]:hover{color:var(--accent);}
           <option value="email">Email</option>
           <option value="idNumber">身分證</option>
           <option value="note">備註</option>
+          <option value="batchCode">批次代碼</option>
         </select>
         <input id="staffSearchKw" type="text" class="input" placeholder="輸入查詢字詞...">
         <select id="staffSearchKwGender" class="input" style="display:none;flex:1;min-width:150px">
@@ -5904,7 +5938,7 @@ th[data-sort]:hover{color:var(--accent);}
         <select id="staffSearchKwSelect" class="input" style="display:none;flex:1;min-width:150px"></select>
         <button class="btn btn-ghost" onclick="doStaffSearch()">搜尋</button>
       </div>
-      <div class="table-wrap"><table><thead><tr id="staffTableHead"><th style="width:36px"><input type="checkbox" id="staffSelectAll" onchange="toggleSelectAll('staffTableBody','staffSelectAll','staffBatchDeleteBtn','staffBatchRejectBtn')"></th><th>姓名</th><th>性別</th><th>生日</th><th>手機</th><th>Email</th><th>身分證</th><th>備註</th><th>操作</th></tr></thead><tbody id="staffTableBody"><tr><td colspan="9" class="loading-cell">請先選擇活動</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr id="staffTableHead"><th style="width:36px"><input type="checkbox" id="staffSelectAll" onchange="toggleSelectAll('staffTableBody','staffSelectAll','staffBatchDeleteBtn','staffBatchRejectBtn')"></th><th>批次</th><th>姓名</th><th>性別</th><th>生日</th><th>手機</th><th>Email</th><th>身分證</th><th>備註</th><th>操作</th></tr></thead><tbody id="staffTableBody"><tr><td colspan="10" class="loading-cell">請先選擇活動</td></tr></tbody></table></div>
     </div>
 
     <!-- 統計分析 -->
@@ -6027,7 +6061,7 @@ th[data-sort]:hover{color:var(--accent);}
           </select>
         </div>
         <div class="input-group" id="evEntryCountThresholdRow" style="margin-top:12px"><label>顯示門檻（0＝一律顯示）</label><input id="evEntryCountThreshold" type="number" min="0" class="input" placeholder="0"></div>
-        <div class="csv-hint" style="margin-top:0">「已報名人數：X」與「報名總人數上限：Y」是參加者報名表單上各自獨立的兩行文字，互不影響——關閉其中一個，另一個還是可以照原本設定顯示。「有設定報名總人數上限才顯示」這個選項指的是已報名人數這行本身要不要出現，跟上面的「顯示報名總人數上限」開關是分開的兩件事。</div>
+        <div style="font-size:.72rem;color:var(--muted);margin:4px 0 0;line-height:1.6">「已報名人數：X」與「報名總人數上限：Y」是參加者報名表單上各自獨立的兩行文字，互不影響——關閉其中一個，另一個還是可以照原本設定顯示。「有設定報名總人數上限才顯示」這個選項指的是已報名人數這行本身要不要出現，跟上面的「顯示報名總人數上限」開關是分開的兩件事。</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
           <div class="input-group" style="margin:0"><label>性別限制</label>
             <select id="evGenderLimit" class="input"><option value="">不限</option><option value="男">限男性</option><option value="女">限女性</option></select></div>
@@ -6105,7 +6139,22 @@ th[data-sort]:hover{color:var(--accent);}
         </div>
       </div>
       <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-        <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">✅ 5. 參加者報到方式</div>
+        <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">👥 5. 參加者報名方式</div>
+        <div class="input-group" style="margin:0"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evMultiEnabled" onchange="document.getElementById('evMultiMaxRow').style.display=this.checked?'':'none'"> 開放參加者多人報名（一位填表人一次幫多人報名）</label>
+          <div id="evMultiMaxRow" style="display:none;margin-top:8px"><label>每次最多幾位（2～50，留空＝10）</label><input id="evMultiMax" type="number" min="2" max="50" class="input" placeholder="10">
+            <div style="font-size:.75rem;color:var(--muted);margin-top:4px">名額不夠時整批都不會報名成功；號碼依「4. 參加者編號方式」，開放自選時每一位都可以填，留空就自動配號；送出後會得到一組批次代碼，填表人用「批次代碼＋手機」查詢、修改整批資料。自訂欄位可在「區塊標題」設定「共同填寫」，整批只填一次。</div></div></div>
+        <div class="input-group" style="margin:12px 0 0"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evQueryRequireBib"> 參加者查詢、修改報名時一定要填編號</label>
+          <div style="font-size:.72rem;color:var(--muted);margin:2px 0 0 22px">不勾＝只要姓名、性別、生日就能查詢（找到多筆時才要求編號），比較方便，但知道姓名和生日的人也能查到、修改。工作人員一律用身分證字號查詢，不受這項影響。</div></div>
+      </div>
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+        <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">🦺 6. 工作人員報名方式</div>
+        <div class="input-group" style="margin:0"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evStaffMultiEnabled" onchange="document.getElementById('evStaffMultiMaxRow').style.display=this.checked?'':'none'"> 開放工作人員多人報名（一位填表人一次幫多人報名）</label>
+          <div id="evStaffMultiMaxRow" style="display:none;margin-top:8px"><label>每次最多幾位（2～50，留空＝10）</label><input id="evStaffMultiMax" type="number" min="2" max="50" class="input" placeholder="10">
+            <div style="font-size:.75rem;color:var(--muted);margin-top:4px">每一位都要填身分證字號；送出後會得到一組批次代碼，填表人用「批次代碼＋手機」查詢、修改整批資料。工作人員表單的「區塊標題」也可以設定「共同填寫」。</div></div></div>
+      </div>
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+        <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">✅ 7. 參加者報到方式</div>
+        <div class="csv-hint" style="margin-bottom:12px">參加者報名成功畫面與報名資訊卡上的說明、是否顯示 QR Code，會依這裡的設定（以及「5. 參加者報名方式」的查詢設定）調整。</div>
         <div class="input-group" style="margin:0">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evCheckinRequired" onchange="onEvCheckinChange()"> 需要報到</label>
           <div id="evCheckinMethodsRow" style="margin:6px 0 0 22px">
@@ -6114,16 +6163,7 @@ th[data-sort]:hover{color:var(--accent);}
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evCheckinQr"> QR Code（手機 App 掃描，參加者要存圖片）</label>
             <div style="font-size:.72rem;color:var(--muted);margin-top:4px">都不選＝報到時用姓名查找，參加者不用記編號、不用存圖片。後台名單搜尋後「標記報到」任何活動都能用。</div>
           </div>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;margin-top:8px"><input type="checkbox" id="evQueryRequireBib"> 查詢、修改報名時一定要填編號</label>
-          <div style="font-size:.72rem;color:var(--muted);margin:2px 0 0 22px">不勾＝只要姓名、性別、生日就能查詢（找到多筆時才要求編號），比較方便，但知道姓名和生日的人也能查到、修改。</div>
-          <div style="font-size:.72rem;color:var(--muted);margin-top:6px">報名成功畫面與報名資訊卡的說明、是否顯示 QR Code，會依這裡的設定調整。</div>
         </div>
-      </div>
-      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-        <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">👥 6. 報名方式</div>
-        <div class="input-group" style="margin:0"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evMultiEnabled" onchange="document.getElementById('evMultiMaxRow').style.display=this.checked?'':'none'"> 開放多人報名（一位填表人一次幫多人報名）</label>
-          <div id="evMultiMaxRow" style="display:none;margin-top:8px"><label>每次最多幾位（2～50，留空＝10）</label><input id="evMultiMax" type="number" min="2" max="50" class="input" placeholder="10">
-            <div style="font-size:.75rem;color:var(--muted);margin-top:4px">名額不夠時整批都不會報名成功；號碼依「4. 參加者編號方式」，開放自選時每一位都可以填，留空就自動配號；送出後會得到一組批次代碼，填表人用「批次代碼＋手機」查詢、修改整批資料。自訂欄位可在「區塊標題」設定「共同填寫」，整批只填一次。</div></div></div>
       </div>
     </form>
     <div class="modal-actions"><button class="btn btn-danger" id="evDeleteBtn" style="margin-right:auto;display:none" onclick="deleteEvent()">刪除活動</button><button class="btn btn-ghost" onclick="closeModal('eventModal')">取消</button><button class="btn btn-primary" onclick="saveEvent()">儲存</button></div>

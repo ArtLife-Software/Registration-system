@@ -29,6 +29,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:13px 18px;border-radius:8px;border:none;font-family:var(--sans);font-size:.92rem;font-weight:700;cursor:pointer;transition:all .15s;white-space:nowrap;}
 .btn-primary{background:var(--accent);color:#fff;}.btn-primary:hover{background:var(--accent2);}
 .btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border);}.btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+.mono{font-family:var(--mono);}
 .btn-sm{padding:6px 12px;font-size:.78rem;border-radius:6px;}
 .btn-full{width:100%;}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;}
@@ -326,9 +327,10 @@ function refreshSignupCf(){
 function refreshEditCf(cardId){
   const box=document.getElementById(cardId+'_edit'); if(!box) return {};
   let fields=[]; try{fields=JSON.parse(box.dataset.customFields||'[]');}catch(e){return {};}
+  let fixed=null; try{ if(box.dataset.cffixed) fixed=JSON.parse(box.dataset.cffixed); }catch(e){}
   return cfApplyVisibility(fields, cardId+'_cf_', cardId+'_cf_row_', {groupId:'',
     gender:document.getElementById(cardId+'_gender')?.value||'',
-    age:cfAgeFrom(document.getElementById(cardId+'_birthday')?.value.trim(), box.dataset.evdate||'')});
+    age:cfAgeFrom(document.getElementById(cardId+'_birthday')?.value.trim(), box.dataset.evdate||'')}, fixed);
 }
 ['input','change'].forEach(evt=>document.addEventListener(evt,e=>{
   const t=e.target; if(!t||!t.closest) return;
@@ -558,7 +560,12 @@ async function selectSignupEvent(eventId,keepWrapper){
     +(curSignupEvent.date?'<div style="font-size:.78rem;color:var(--muted);margin-top:4px">'+esc(curSignupEvent.date)+'</div>':'')
     +(regInfo?'<div style="margin-top:8px;text-align:left">'+regInfo+'</div>':'')
     +'</div>';
-  formHtml+='<div class="card">';
+  if(curSignupEvent.staffMultiSignup?.enabled===true){
+    const mx=Math.min(50,curSignupEvent.staffMultiSignup.max||10);
+    formHtml+='<div class="card" style="display:flex;gap:8px;padding:10px"><button type="button" class="btn btn-primary btn-sm su-mode-btn" data-mode="single" style="flex:1" onclick="setSignupMode(\'single\')">個人報名</button>'
+      +'<button type="button" class="btn btn-ghost btn-sm su-mode-btn" data-mode="multi" style="flex:1" onclick="setSignupMode(\'multi\')">多人報名（最多 '+mx+' 位）</button></div>';
+  }
+  formHtml+='<div id="suSingleWrap"><div class="card">';
   formHtml+='<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="suName" type="text" class="input" placeholder="王小明"></div>';
   formHtml+='<div class="input-group"><label>性別 <span class="required-star">*</span></label><select id="suGender" class="input"><option value="">請選擇...</option><option value="男">男</option><option value="女">女</option></select></div>';
   formHtml+='<div class="input-group"><label>生日（yyyy/mm/dd）<span class="required-star">*</span></label>';
@@ -597,7 +604,8 @@ async function selectSignupEvent(eventId,keepWrapper){
     formHtml+='</div>';
   });
   formHtml+='<div id="turnstileContainer" style="margin:12px 0;display:flex;justify-content:center;min-height:65px"></div>';
-  formHtml+='<button class="btn btn-primary btn-full" onclick="submitSignup()">送出報名</button></div>';
+  formHtml+='<button class="btn btn-primary btn-full" id="suSubmitBtn" onclick="submitSignup()">送出報名</button></div></div>';
+  formHtml+='<div id="suMultiWrap" style="display:none"></div>';
   if(keepWrapper){document.getElementById('signupForm').innerHTML=formHtml;}
   else{document.getElementById('signupContent').innerHTML=formHtml;}
   renderTurnstileWidget('turnstileContainer');
@@ -677,7 +685,10 @@ window.submitSignup=async function(){
     }
   }
   const runnerData={name,gender,birthday,phone,email,idNumber,note};
-  const btn=document.querySelector('#signupContent .btn-primary, #signupForm .btn-primary');
+  const btn=document.getElementById('suSubmitBtn');
+  if(!currentTurnstileToken){showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error');return;}
+  // 送出前確認資料
+  if(!(await confirmBeforeSubmit([{rows:[['活動',curSignupEvent.name||''],['姓名',name],['性別',gender],['生日',birthday],['身分證',idNumber.toUpperCase()],['手機',phone],['Email',email],['備註',note]].concat(cfConfirmRows(curSignupCustomFields,customData))}]))) return;
   btn.textContent='送出中...'; btn.disabled=true;
   try{
     // 報名改走 Cloud Function（staffAction）：工作人員個資已從公開可讀的
@@ -753,7 +764,8 @@ async function selectStatusEvent(eventId, keepWrapper){
     +'<div class="input-group"><label>身分證字號</label>'
     +'<input id="statusIdNum" type="text" class="input" placeholder="A123456789" oninput="applyHalf(this)"></div>'
     +'<button class="btn btn-primary btn-full" onclick="doStatusQuery()">🔍 查詢報名</button>'
-    +'</div>';
+    +'</div>'
+    +(curStatusEvent.staffMultiSignup?.enabled===true?batchQueryCardHtml():'');
   if(keepWrapper){
     document.getElementById('statusForm').innerHTML=formHtml;
   } else {
@@ -792,6 +804,7 @@ window.doStatusQuery=async function(){
     html+='<div style="font-size:.78rem;color:var(--muted);margin-bottom:8px">'+esc(ev.name)+(ev.date?'　'+esc(ev.date):'')+'</div>';
     html+='<div style="font-size:1rem;font-weight:700;margin-bottom:4px">'+esc(e.name)+'</div>';
     html+='<div style="font-size:.82rem;color:var(--muted)">'+esc(e.gender)+'　'+esc(e.birthday)+(e.phone?'　'+esc(e.phone):'')+'</div>';
+    if(e.batchCode) html+='<div style="font-size:.75rem;color:var(--muted);margin-top:4px">多人報名（批次 <span class="mono">'+esc(e.batchCode)+'</span>）</div>';
     if(isStaffRegOpen(ev)){
       if(e.cancelRequested){
         html+='<div id="'+cardId+'_actions">';
@@ -812,10 +825,12 @@ window.doStatusQuery=async function(){
   }
   result.innerHTML=html;
 }
+// 呼叫伺服器用目前的身分證（改過身分證後，文件 ID 還是舊的號碼）
+const staffKey=docId=>(staffCache[docId]&&staffCache[docId].idNumber)||docId;
 // ── 撤銷取消申請 ──
 window.withdrawStaffCancelRequest=async function(eventId, staffDocId, cardId){
   try{
-    await callFn('staffAction')({eventId,action:'withdraw',idNumber:staffDocId});
+    await callFn('staffAction')({eventId,action:'withdraw',idNumber:staffKey(staffDocId)});
     const actions=document.getElementById(cardId+'_actions');
     if(actions) actions.outerHTML='<div id="'+cardId+'_actions">'
       +'<div style="display:flex;gap:8px;margin-top:12px">'
@@ -831,7 +846,7 @@ window.withdrawStaffCancelRequest=async function(eventId, staffDocId, cardId){
 window.requestCancelStaffEntry=async function(eventId, staffDocId, cardId){
   if(!confirm('確定要送出取消報名申請？\n（送出後請等待主辦方審核確認，不會立即取消）'))return;
   try{
-    await callFn('staffAction')({eventId,action:'cancel',idNumber:staffDocId});
+    await callFn('staffAction')({eventId,action:'cancel',idNumber:staffKey(staffDocId)});
     const actions=document.getElementById(cardId+'_actions');
     if(actions) actions.outerHTML='<div style="margin-top:12px;padding:10px 12px;background:var(--surface2);border-radius:8px;font-size:.82rem;color:var(--muted)">⏳ 已送出取消申請，請等待主辦方確認</div>';
     showToast('已送出取消申請');
@@ -896,6 +911,18 @@ window.showEditForm=async function(eventId,staffDocId,cardId){
   box.dataset.customFields=JSON.stringify(customFields);
   box.dataset.sfs=JSON.stringify(sfs);
   box.dataset.evdate=evDoc.data()?.date||'';
+  // 多人報名的成員：共同填寫的欄位只能由填表人用「批次代碼＋手機」修改，這裡鎖住
+  if(e.batchCode){
+    const sids=cfSharedIds(customFields);
+    box.dataset.cffixed=JSON.stringify(cfFixedFromStored(customFields,cd));
+    let noted=false;
+    customFields.forEach(f=>{
+      if(!sids.has(f.id))return;
+      const row=document.getElementById(cardId+'_cf_row_'+f.id); if(!row)return;
+      row.querySelectorAll('input,select,textarea').forEach(el=>{el.disabled=true;});
+      if(!noted){ row.insertAdjacentHTML('beforebegin','<div class="csv-hint">此筆是多人報名（批次 '+esc(e.batchCode)+'），共同填寫的欄位請由填表人用「批次代碼＋手機」修改。</div>'); noted=true; }
+    });
+  } else delete box.dataset.cffixed;
   refreshEditCf(cardId);
 }
 
@@ -945,15 +972,351 @@ window.saveEdit=async function(eventId,staffDocId,cardId){
   try{
     // 儲存改走 Cloud Function（伺服器端驗證後就地更新；文件ID＝查詢用的
     // 原身分證，欄位裡的身分證可修改）
-    await callFn('staffAction')({
-      eventId,action:'save',idNumber:staffDocId,
-      profile:{name,gender,birthday,phone,email,note,newIdNumber:idNumber},customData
-    });
-    Object.assign(staffCache[staffDocId]||{},{name,gender,birthday,idNumber,phone,email,note,customData});
+    const payload={
+      eventId,action:'save',idNumber:staffKey(staffDocId),
+      profile:{name,gender,birthday,phone,email,note,newIdNumber:idNumber.toUpperCase()},customData
+    };
+    let res=(await callFn('staffAction')(payload)).data;
+    // 改了姓名、性別、生日或身分證：確認是同一人修改資料（不能換人）
+    if(res.status==='confirm-identity-change'){
+      if(!(await confirmIdentityChange(res.fields||[],''))) return;
+      res=(await callFn('staffAction')({...payload,confirmIdentityChange:true})).data;
+    }
+    Object.assign(staffCache[staffDocId]||{},{name,gender,birthday,idNumber:idNumber.toUpperCase(),phone,email,note,customData});
     showToast('已儲存修改');
     document.getElementById(cardId+'_edit').innerHTML='<div class="csv-hint" style="margin-top:12px">✅ 修改已儲存，如有修改身分證，下次請用新號碼查詢。</div>';
   }catch(err){showToast('儲存失敗：'+err.message,'error');}
 }
+
+// ════════════════════════════════════════════════════════════════
+// 對話框：送出前確認、修改不能換人的警告（跟參加者頁同一套）
+// ════════════════════════════════════════════════════════════════
+function idDialog(o){
+  const dlg=document.createElement('div');
+  dlg.className='id-dialog';
+  dlg.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9998;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box';
+  const btns=(o.buttons||[]).map((b,i)=>'<button type="button" data-i="'+i+'" class="btn '+(b.primary?'btn-primary':'btn-ghost')+' btn-sm">'+esc(b.label)+'</button>').join('');
+  dlg.innerHTML='<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;max-width:480px;width:100%;box-sizing:border-box;max-height:90vh;overflow:auto">'
+    +'<div style="font-size:1rem;font-weight:700;margin-bottom:8px">'+(o.who?esc(o.who)+'：':'')+esc(o.title)+'</div>'+(o.html||'')
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+btns+'</div></div>';
+  document.body.appendChild(dlg);
+  return new Promise(resolve=>{
+    dlg.querySelectorAll('button[data-i]').forEach(el=>el.onclick=()=>{ dlg.remove(); resolve({value:o.buttons[+el.dataset.i].value}); });
+  });
+}
+async function confirmIdentityChange(fields, who){
+  const r=await idDialog({who, title:'確定是同一人修改資料嗎？',
+    html:(fields&&fields.length?'<div style="font-size:.82rem;margin-bottom:6px">你改了：<strong>'+esc(fields.join('、'))+'</strong></div>':'')
+      +'<div style="font-size:.82rem;line-height:1.7;color:var(--accent)">系統不允許同一筆資料換不同人，若要換人，請先申請取消報名，再新增報名。</div>',
+    buttons:[{label:'確定，是同一人',value:'yes',primary:true},{label:'取消',value:'no'}]});
+  return r.value==='yes';
+}
+async function confirmBeforeSubmit(sections, title){
+  const tbl=rows=>'<table style="width:100%;border-collapse:collapse;margin-bottom:8px">'+rows.filter(r=>r[1]!==''&&r[1]!=null).map(r=>'<tr><td style="padding:3px 8px 3px 0;font-size:.78rem;color:var(--muted);white-space:nowrap;vertical-align:top;border:none">'+esc(r[0])+'</td><td style="padding:3px 0;font-size:.88rem;word-break:break-all;border:none">'+esc(String(r[1]))+'</td></tr>').join('')+'</table>';
+  const html=sections.map(s=>(s.title?'<div style="font-weight:700;font-size:.88rem;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">'+esc(s.title)+'</div>':'')+tbl(s.rows)).join('')
+    +'<div style="font-size:.78rem;color:var(--accent);margin-top:4px">請確認資料正確，尤其是姓名、性別、生日、身分證字號。</div>';
+  const r=await idDialog({title:title||'請確認報名資料', html, buttons:[{label:'確認送出',value:'ok',primary:true},{label:'返回修改',value:'back'}]});
+  return r.value==='ok';
+}
+function cfConfirmRows(fields, data){
+  const rows=[];
+  (fields||[]).forEach(f=>{
+    if(f.type==='section'||!(f.id in (data||{}))) return;
+    let v=data[f.id];
+    if(Array.isArray(v)) v=v.join('、'); else if(v===true) v='是'; else if(v===false) v='否';
+    rows.push([f.label,v]);
+  });
+  return rows;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 工作人員多人報名（活動 staffMultiSignup.enabled）
+// 報名分頁 ns='mp'（新報名）、查詢分頁 ns='mb'（用批次代碼＋填表人手機修改整批）。
+// 自訂欄位：區塊標題設成「共同填寫」的區塊整批只填一次，其他欄位每人各填。
+// ════════════════════════════════════════════════════════════════
+const MF={};
+function mfInit(ns, o){
+  const st={ns, seq:0, keys:[], docIds:{}, ...o};
+  st.sids=cfSharedIds(st.fields);
+  MF[ns]=st; return st;
+}
+function mfCfHtml(f, id, val){
+  const reqMark=f.required?' <span class="required-star">*</span>':'';
+  const descHtml=f.description?'<div style="font-size:.75rem;color:var(--text);margin-top:2px">'+esc(f.description)+'</div>':'';
+  if(f.type==='multi') return multiFieldHtml(id, f, Array.isArray(val)?val:[], reqMark, descHtml);
+  if(f.type==='checkbox') return '<div class="input-group"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="'+id+'"'+(val===true?' checked':'')+'> '+esc(f.label)+reqMark+'</label>'+descHtml+'</div>';
+  if(f.type==='select'){
+    const v=typeof val==='string'?val:'';
+    const isOther=f.allowOther&&v!==''&&!(f.options||[]).includes(v);
+    return '<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><select id="'+id+'" class="input"'
+      +(f.allowOther?' onchange="document.getElementById(\''+id+'_other\').style.display=this.value===\'__other__\'?\'block\':\'none\'"':'')+'>'
+      +'<option value="">請選擇...</option>'
+      +(f.options||[]).map(o=>'<option value="'+esc(o)+'"'+(o===v?' selected':'')+'>'+esc(o)+'</option>').join('')
+      +(f.allowOther?'<option value="__other__"'+(isOther?' selected':'')+'>其他（請輸入）</option>':'')
+      +'</select>'
+      +(f.allowOther?'<input type="text" id="'+id+'_other" class="input" style="margin-top:6px;display:'+(isOther?'block':'none')+'" placeholder="請輸入..." value="'+esc(isOther?v:'')+'">':'')
+      +descHtml+'</div>';
+  }
+  return '<div class="input-group"><label>'+esc(f.label)+reqMark+'</label><input id="'+id+'" type="text" class="input" value="'+esc(typeof val==='string'?val:'')+'">'+descHtml+'</div>';
+}
+function mfFieldsHtml(fields, idPrefix, rowPrefix, values){
+  return fields.map(f=>'<div id="'+rowPrefix+f.id+'">'+(f.type==='section'?cfSectionHtml(f):mfCfHtml(f,idPrefix+f.id,(values||{})[f.id]))+'</div>').join('');
+}
+function mfCollectCf(fields, idPrefix, vis){
+  const data={};
+  for(const f of fields){
+    if(f.type==='section'||!vis[f.id]) continue;
+    const id=idPrefix+f.id; const el=document.getElementById(id); if(!el) continue;
+    if(f.type==='multi'){ const r=readMultiField(id,f); if(r.error) return {error:r.error}; data[f.id]=r.value; continue; }
+    if(f.type==='checkbox'){ if(f.required&&!el.checked) return {error:'「'+f.label+'」為必填，請勾選'}; data[f.id]=el.checked; continue; }
+    let v=el.value.trim();
+    if(f.type==='select'&&f.allowOther&&v==='__other__') v=(document.getElementById(id+'_other')?.value||'').trim();
+    if(f.required&&!v) return {error:'「'+f.label+'」為必填'};
+    data[f.id]=v;
+  }
+  return {data};
+}
+const mfPersonFields=st=>st.fields.filter(f=>!st.sids.has(f.id));
+const mfSharedFields=st=>st.fields.filter(f=>st.sids.has(f.id));
+function mfPersonHtml(st, k, p){
+  const ns=st.ns, P=ns+k+'_', e=(p&&p.data)||{};
+  const sfs=st.ev.staffFieldSettings||{};
+  const inp=(id,label,req,val,ph,type)=>'<div class="input-group"><label>'+label+(req?' <span class="required-star">*</span>':'')+'</label><input id="'+P+id+'" type="'+(type||'text')+'" class="input" placeholder="'+(ph||'')+'" value="'+esc(val||'')+'" oninput="applyHalf(this)"></div>';
+  let h='<div class="card mf-person" id="'+P+'card" style="border-left:3px solid var(--accent)">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong class="mf-title" style="font-size:1rem"></strong>';
+  if(!st.edit) h+='<button type="button" class="btn btn-sm btn-ghost mf-remove" onclick="mfRemovePerson(\''+ns+'\','+k+')">✕ 移除</button>';
+  h+='</div>';
+  if(st.edit&&e.cancelRequested) h+='<div class="csv-hint" style="color:var(--red)">⚠️ 這位已申請取消，等待主辦單位確認</div>';
+  h+=inp('name','姓名',true,e.name,'王小明');
+  h+='<div class="input-group"><label>性別 <span class="required-star">*</span></label><select id="'+P+'gender" class="input"><option value="">請選擇...</option>'
+    +['男','女'].map(g=>'<option value="'+g+'"'+(e.gender===g?' selected':'')+'>'+g+'</option>').join('')+'</select></div>';
+  h+='<div class="input-group"><label>生日（yyyy/mm/dd） <span class="required-star">*</span></label><input id="'+P+'birthday" data-fmt="ymd" type="text" class="input" placeholder="yyyy/mm/dd" value="'+esc(e.birthday||'')+'" oninput="applyHalf(this)"></div>';
+  h+=inp('idNumber','身分證字號（1英文+9數字）',true,e.idNumber,'A123456789');
+  if(sfs.phone?.show!==false) h+=inp('phone','手機號碼（09開頭10碼）',sfs.phone?.required===true,e.phone,'0912345678','tel');
+  if(sfs.email?.show!==false) h+=inp('email','E-Mail',sfs.email?.required===true,e.email,'example@email.com','email');
+  h+=inp('note','備註',false,e.note,'');
+  h+=mfFieldsHtml(mfPersonFields(st), P+'cf_', P+'cf_row_', e.customData||{});
+  if(st.edit){
+    h+=e.cancelRequested
+      ?'<button type="button" class="btn btn-sm btn-ghost mf-act" onclick="mfBatchAct(\''+ns+'\','+k+',\'withdraw\')">↩️ 撤銷取消申請</button>'
+      :'<button type="button" class="btn btn-sm btn-danger mf-act" onclick="mfBatchAct(\''+ns+'\','+k+',\'cancel\')">申請取消這位</button>';
+  }
+  return h+'</div>';
+}
+function mfFormHtml(st, data){
+  const ns=st.ns, sb=(data&&data.submitter)||{};
+  let h='<div data-smf="'+ns+'"><div class="card"><div style="font-weight:800;margin-bottom:6px">填表人</div>'
+    +'<div class="csv-hint">填表人負責這一批報名，之後用「批次代碼＋填表人手機」查詢、修改整批資料。填表人不一定要擔任工作人員。</div>'
+    +'<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="'+ns+'_sbName" type="text" class="input" value="'+esc(sb.name||'')+'"></div>'
+    +'<div class="input-group"><label>手機號碼（09開頭10碼） <span class="required-star">*</span></label><input id="'+ns+'_sbPhone" type="tel" class="input" placeholder="0912345678" value="'+esc(sb.phone||'')+'" oninput="applyHalf(this)"></div>'
+    +'<div class="input-group"><label>E-Mail</label><input id="'+ns+'_sbEmail" type="email" class="input" value="'+esc(sb.email||'')+'"></div></div>';
+  h+='<div id="'+ns+'_persons"></div>';
+  if(!st.edit) h+='<button type="button" class="btn btn-ghost btn-full" id="'+ns+'_addBtn" style="margin-bottom:12px" onclick="mfAddPerson(\''+ns+'\')">＋ 再加一位</button>';
+  const shared=mfSharedFields(st);
+  if(shared.length){
+    h+='<div class="card" id="'+ns+'_sharedCard"><div style="font-weight:800;margin-bottom:2px">共同填寫</div><div class="csv-hint">以下資料整批只填一次。</div>'
+      +mfFieldsHtml(shared, ns+'S_cf_', ns+'S_cf_row_', (data&&data.shared)||{})+'</div>';
+  }
+  h+='<div class="card">';
+  if(!st.edit) h+='<div id="'+ns+'_turnstile" style="margin:12px 0;display:flex;justify-content:center;min-height:65px"></div>';
+  h+='<button type="button" class="btn btn-primary btn-full" id="'+ns+'_submitBtn" onclick="'+(st.edit?'mfSaveBatch':'mfSubmitSignup')+'(\''+ns+'\')">'+(st.edit?'儲存整批修改':'送出報名')+'</button>';
+  if(st.edit&&!st.regOpen) h+='<div class="csv-hint" style="margin-top:8px">目前非開放報名期間，只能查看，無法修改。</div>';
+  return h+'</div></div>';
+}
+window.mfAddPerson=function(ns, p){
+  const st=MF[ns]; if(!st) return;
+  if(!st.edit&&st.keys.length>=st.max){ showToast('一次最多報名 '+st.max+' 位','error'); return; }
+  const k=++st.seq; st.keys.push(k);
+  if(p&&p.staffDocId) st.docIds[k]=p.staffDocId;
+  document.getElementById(ns+'_persons').insertAdjacentHTML('beforeend', mfPersonHtml(st,k,p));
+  mfRefresh(ns);
+};
+window.mfRemovePerson=function(ns, k){
+  const st=MF[ns]; if(!st) return;
+  if(st.keys.length<=1){ showToast('至少要有一位','error'); return; }
+  const name=document.getElementById(ns+k+'_name')?.value.trim();
+  if(name&&!confirm('確定移除「'+name+'」？'))return;
+  document.getElementById(ns+k+'_card')?.remove();
+  st.keys=st.keys.filter(x=>x!==k);
+  mfRefresh(ns);
+};
+window.mfRefresh=function(ns){
+  const st=MF[ns]; if(!st) return null;
+  st.keys.forEach((k,i)=>{
+    const P=ns+k+'_';
+    const t=document.querySelector('#'+P+'card .mf-title'); if(t) t.textContent='第 '+(i+1)+' 位';
+    const rm=document.querySelector('#'+P+'card .mf-remove'); if(rm) rm.style.display=st.keys.length>1?'':'none';
+  });
+  const add=document.getElementById(ns+'_addBtn');
+  if(add){ add.disabled=st.keys.length>=st.max; add.textContent=st.keys.length>=st.max?'已達每次上限 '+st.max+' 位':'＋ 再加一位（最多 '+st.max+' 位）'; }
+  const pf=mfPersonFields(st), sf=mfSharedFields(st);
+  const persons=st.keys.map(k=>{
+    const values={}; pf.forEach(f=>{ if(f.type!=='section') values[f.id]=cfReadRaw(ns+k+'_cf_'+f.id,f); });
+    return {values, ctx:{groupId:'', gender:document.getElementById(ns+k+'_gender')?.value||'', age:cfAgeFrom(document.getElementById(ns+k+'_birthday')?.value.trim(), st.ev.date||'')}};
+  });
+  const shared={}; sf.forEach(f=>{ if(f.type!=='section') shared[f.id]=cfReadRaw(ns+'S_cf_'+f.id,f); });
+  const vm=cfVisibilityMulti(st.fields, shared, persons);
+  st.keys.forEach((k,i)=>pf.forEach(f=>{ const row=document.getElementById(ns+k+'_cf_row_'+f.id); if(row) row.style.display=vm.persons[i][f.id]?'':'none'; }));
+  sf.forEach(f=>{ const row=document.getElementById(ns+'S_cf_row_'+f.id); if(row) row.style.display=vm.shared[f.id]?'':'none'; });
+  const sc=document.getElementById(ns+'_sharedCard'); if(sc) sc.style.display=sf.some(f=>vm.shared[f.id]&&f.type!=='section')?'':'none';
+  return vm;
+};
+['input','change'].forEach(evt=>document.addEventListener(evt,e=>{
+  const w=e.target&&e.target.closest&&e.target.closest('[data-smf]'); if(w) mfRefresh(w.dataset.smf);
+},true));
+function mfRead(st){
+  const ns=st.ns, sfs=st.ev.staffFieldSettings||{};
+  const vm=mfRefresh(ns);
+  const submitter={name:document.getElementById(ns+'_sbName').value.trim(), phone:document.getElementById(ns+'_sbPhone').value.trim(), email:document.getElementById(ns+'_sbEmail').value.trim()};
+  if(!submitter.name) return {error:'請填寫填表人姓名'};
+  if(!/^09\d{8}$/.test(submitter.phone)) return {error:'請填寫正確的填表人手機（09開頭10碼）'};
+  if(submitter.email&&!validateEmail(submitter.email)) return {error:'填表人 Email 格式錯誤'};
+  const persons=[]; const seen={};
+  for(let i=0;i<st.keys.length;i++){
+    const k=st.keys[i], P=ns+k+'_', v=id=>(document.getElementById(P+id)?.value||'').trim();
+    const p={name:v('name'), gender:v('gender'), birthday:v('birthday'), idNumber:v('idNumber').toUpperCase(), phone:v('phone'), email:v('email'), note:v('note')};
+    const who='第 '+(i+1)+' 位'+(p.name?'（'+p.name+'）':'')+'：';
+    if(!p.name) return {error:who+'請填寫姓名'};
+    if(!p.gender) return {error:who+'請選擇性別'};
+    if(!p.birthday||!validateBirthday(p.birthday)) return {error:who+'請填寫正確的生日（yyyy/mm/dd）'};
+    if(!validateId(p.idNumber)) return {error:who+'請填寫正確的身分證字號'};
+    if(seen[p.idNumber]) return {error:'第 '+seen[p.idNumber]+' 位和第 '+(i+1)+' 位的身分證字號相同，請刪除其中一位'};
+    seen[p.idNumber]=i+1;
+    if(sfs.phone?.show!==false&&sfs.phone?.required&&!p.phone) return {error:who+'請填寫手機號碼'};
+    if(p.phone&&!validatePhone(p.phone)) return {error:who+'手機號碼格式錯誤'};
+    if(sfs.email?.show!==false&&sfs.email?.required&&!p.email) return {error:who+'請填寫 E-Mail'};
+    if(p.email&&!validateEmail(p.email)) return {error:who+'Email 格式錯誤'};
+    const r=mfCollectCf(mfPersonFields(st), P+'cf_', vm.persons[i]);
+    if(r.error) return {error:who+r.error};
+    p.customData=r.data;
+    if(st.edit) p.staffDocId=st.docIds[k];
+    persons.push(p);
+  }
+  const rs=mfCollectCf(mfSharedFields(st), ns+'S_cf_', vm.shared);
+  if(rs.error) return {error:'共同填寫：'+rs.error};
+  return {payload:{submitter, shared:rs.data, persons}};
+}
+function mfConfirmSections(st,pl){
+  const out=[{title:'填表人',rows:[['姓名',pl.submitter.name],['手機',pl.submitter.phone],['Email',pl.submitter.email||'']]}];
+  const sh=cfConfirmRows(mfSharedFields(st),pl.shared);
+  if(sh.length) out.push({title:'共同填寫',rows:sh});
+  pl.persons.forEach((p,i)=>out.push({title:'第 '+(i+1)+' 位',rows:[['姓名',p.name],['性別',p.gender],['生日',p.birthday],['身分證',p.idNumber],['手機',p.phone],['Email',p.email],['備註',p.note]].concat(cfConfirmRows(mfPersonFields(st),p.customData))}));
+  return out;
+}
+// ── 報名分頁：切換個人／多人報名 ──
+window.setSignupMode=function(mode){
+  const single=document.getElementById('suSingleWrap'), multi=document.getElementById('suMultiWrap');
+  if(!single||!multi) return;
+  document.querySelectorAll('.su-mode-btn').forEach(b=>{ b.classList.toggle('btn-primary',b.dataset.mode===mode); b.classList.toggle('btn-ghost',b.dataset.mode!==mode); });
+  if(mode==='multi'){
+    single.style.display='none'; multi.style.display='';
+    if(!multi.dataset.ready){
+      const st=mfInit('mp',{ev:curSignupEvent, fields:curSignupCustomFields, max:Math.min(50,curSignupEvent.staffMultiSignup?.max||10), edit:false});
+      multi.innerHTML=mfFormHtml(st,null);
+      mfAddPerson('mp'); mfAddPerson('mp');
+      multi.dataset.ready='1';
+    }
+    renderTurnstileWidget('mp_turnstile');
+  } else {
+    multi.style.display='none'; single.style.display='';
+    renderTurnstileWidget('turnstileContainer');
+  }
+};
+window.mfSubmitSignup=async function(ns){
+  const st=MF[ns]; if(!st||st.busy) return;
+  const r=mfRead(st);
+  if(r.error){ showToast(r.error,'error'); return; }
+  if(!currentTurnstileToken){ showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error'); return; }
+  st.busy=true;
+  if(!(await confirmBeforeSubmit(mfConfirmSections(st,r.payload)))){ st.busy=false; return; }
+  const btn=document.getElementById(ns+'_submitBtn');
+  btn.disabled=true; btn.textContent='送出中...';
+  try{
+    const res=(await callFn('staffBatchSignup')({eventId:curSignupEvent.id, ...r.payload, turnstileToken:currentTurnstileToken})).data;
+    showStaffBatchSuccess(res, r.payload.submitter);
+  }catch(e){
+    showToast('報名失敗：'+e.message,'error');
+    resetTurnstileWidget();
+  }finally{
+    st.busy=false;
+    const b=document.getElementById(ns+'_submitBtn'); if(b){ b.disabled=false; b.textContent='送出報名'; }
+  }
+};
+function showStaffBatchSuccess(res, submitter){
+  const ps=res.persons||[];
+  document.getElementById('signupContent').innerHTML='<div class="card" style="text-align:center"><div style="font-size:2.5rem">✅</div>'
+    +'<div style="font-size:1.1rem;font-weight:900">多人報名成功！共 '+ps.length+' 位</div>'
+    +'<div style="font-size:.82rem;color:var(--muted);margin:4px 0 14px">'+esc(curSignupEvent?.name||'')+(curSignupEvent?.date?'（'+esc(curSignupEvent.date)+'）':'')+'</div>'
+    +'<div style="font-size:.75rem;color:var(--muted)">批次代碼</div>'
+    +'<div id="batchCodeShow" class="mono" style="font-size:2rem;font-weight:900;color:var(--accent);letter-spacing:3px">'+esc(res.batchCode||'')+'</div>'
+    +'<div style="margin:12px 0;font-size:.88rem;line-height:1.8">'+ps.map((p,i)=>(i+1)+'. '+esc(p.name)+'　'+esc(p.gender||'')+(p.reactivated?' <span style="font-size:.75rem;color:var(--muted)">（先前的取消申請已撤回）</span>':'')).join('<br>')+'</div>'
+    +'<div class="csv-hint" style="text-align:left;color:var(--text)">請記下批次代碼。填表人（'+esc(submitter.name)+'）可在「查詢報名／修改」分頁，用「批次代碼＋手機 '+esc(submitter.phone)+'」查詢、修改整批資料；每位工作人員也可以用自己的身分證字號個別查詢。</div></div>';
+}
+// ── 查詢分頁：批次代碼＋填表人手機 ──
+function batchQueryCardHtml(){
+  return '<div class="card"><div style="font-weight:800;margin-bottom:4px">多人報名：查詢整批</div>'
+    +'<div class="csv-hint">用多人報名時拿到的批次代碼，加上填表人手機，查詢、修改整批資料。</div>'
+    +'<div class="input-group"><label>批次代碼</label><input id="bqCode" type="text" class="input" placeholder="例：BXXXXXX" style="text-transform:uppercase" oninput="applyHalf(this)"></div>'
+    +'<div class="input-group"><label>填表人手機</label><input id="bqPhone" type="tel" class="input" placeholder="0912345678" oninput="applyHalf(this)"></div>'
+    +'<button class="btn btn-primary btn-full" onclick="doBatchQuery()">🔍 查詢整批</button></div>';
+}
+window.doBatchQuery=async function(cred){
+  if(!curStatusEvent){ showToast('請先選擇活動','error'); return; }
+  const code=(cred?cred.code:document.getElementById('bqCode').value).trim().toUpperCase();
+  const phone=(cred?cred.phone:document.getElementById('bqPhone').value).trim();
+  if(!code||!phone){ showToast('請填寫批次代碼與填表人手機','error'); return; }
+  const out=document.getElementById('statusResult');
+  out.innerHTML='<div class="card"><div class="loading-cell">查詢中...</div></div>';
+  try{
+    const ev=curStatusEvent;
+    const res=(await callFn('staffBatch')({eventId:ev.id, batchCode:code, phone, action:'get'})).data;
+    const st=mfInit('mb',{ev, fields:ev.staffCustomFields||[], max:999, edit:true, regOpen:res.regOpen, cred:{code:res.batchCode||code, phone}});
+    out.innerHTML='<div class="card" style="text-align:center"><div style="font-size:.75rem;color:var(--muted)">批次代碼</div><div class="mono" style="font-size:1.5rem;font-weight:900;color:var(--accent);letter-spacing:2px">'+esc(st.cred.code)+'</div>'
+      +'<div style="font-size:.8rem;color:var(--muted)">共 '+(res.persons||[]).length+' 位。要加人請另外報名；要退出請按該位的「申請取消」。</div></div>'
+      +'<div id="mbWrap">'+mfFormHtml(st,res)+'</div>';
+    (res.persons||[]).forEach(p=>mfAddPerson('mb',p));
+    if(!res.regOpen) out.querySelectorAll('input,select,textarea,button.mf-act,#mb_submitBtn').forEach(el=>{el.disabled=true;});
+  }catch(e){
+    out.innerHTML='';
+    showToast('查詢失敗：'+e.message,'error');
+  }
+};
+window.mfSaveBatch=async function(ns){
+  const st=MF[ns]; if(!st||st.busy) return;
+  const r=mfRead(st);
+  if(r.error){ showToast(r.error,'error'); return; }
+  const btn=document.getElementById(ns+'_submitBtn');
+  st.busy=true; btn.disabled=true; btn.textContent='儲存中...';
+  try{
+    const fn=callFn('staffBatch');
+    const payload={eventId:st.ev.id, batchCode:st.cred.code, phone:st.cred.phone, action:'save', ...r.payload};
+    let res=(await fn(payload)).data;
+    if(res.status==='confirm-identity-change'){
+      for(const c of res.persons||[]){
+        const p=r.payload.persons[c.index]||{};
+        if(!(await confirmIdentityChange(c.fields||[], '第 '+(c.index+1)+' 位（'+(p.name||'')+'）'))) return;
+      }
+      res=(await fn({...payload, confirmIdentityChange:true})).data;
+    }
+    showToast('整批修改已儲存');
+    await doBatchQuery({code:st.cred.code, phone:r.payload.submitter.phone});
+  }catch(e){
+    showToast('儲存失敗：'+e.message,'error');
+  }finally{
+    st.busy=false;
+    const b=document.getElementById(ns+'_submitBtn'); if(b&&b.textContent==='儲存中...'){ b.disabled=false; b.textContent='儲存整批修改'; }
+  }
+};
+window.mfBatchAct=async function(ns,k,action){
+  const st=MF[ns]; if(!st) return;
+  const name=document.getElementById(ns+k+'_name')?.value.trim()||'';
+  if(action==='cancel'&&!confirm('確定替「'+name+'」申請取消報名？送出後由主辦單位確認才會刪除。'))return;
+  try{
+    await callFn('staffBatch')({eventId:st.ev.id, batchCode:st.cred.code, phone:st.cred.phone, action, staffDocId:st.docIds[k]});
+    showToast(action==='cancel'?'已送出取消申請':'已撤銷取消申請');
+    await doBatchQuery(st.cred);
+  }catch(e){ showToast('失敗：'+e.message,'error'); }
+};
 
 // 先確認報名系統，再載入報名頁
 ensureAuth().then(initSystem).then(ok=>{ if(ok) initSignupPage(); });
