@@ -1483,7 +1483,7 @@ function mfPersonHtml(st, k, p){
     +'<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:.85rem;line-height:1.5"><input type="checkbox" id="'+P+'pc" style="margin-top:3px;flex-shrink:0"'+(en.parentalConsentAgreed?' checked':'')+'><span>本人（家長／監護人）已閱讀相關規定，同意全程陪同參加者完成活動，並承擔相關責任。</span></label>'
     +'<div class="input-group" style="margin-top:10px;margin-bottom:0"><label>緊急聯絡人姓名 <span class="required-star">*</span></label><input id="'+P+'pn" type="text" class="input" value="'+esc(en.parentName||'')+'"></div>'
     +'<div class="input-group" style="margin-top:10px;margin-bottom:0"><label>緊急聯絡人手機 <span class="required-star">*</span></label><input id="'+P+'pp" type="tel" class="input" value="'+esc(en.parentPhone||'')+'" oninput="applyHalf(this)"></div>'
-    +'<button type="button" class="btn btn-sm btn-ghost" style="margin-top:8px" onclick="mfParentFromSubmitter(\''+ns+'\','+k+')">帶入送出人</button>'
+    +'<button type="button" class="btn btn-sm btn-ghost" style="margin-top:8px" onclick="mfParentFromSubmitter(\''+ns+'\','+k+')">帶入填表人</button>'
     +'</div></div>';
   if(st.edit){
     h+=en.cancelRequested
@@ -1495,8 +1495,8 @@ function mfPersonHtml(st, k, p){
 // 整個多人表單（submitLabel／onSubmit 依新報名或修改而不同）
 function mfFormHtml(st, data){
   const ns=st.ns, sb=(data&&data.submitter)||{};
-  let h='<div class="card"><div style="font-weight:800;margin-bottom:6px">送出人</div>'
-    +'<div class="csv-hint">送出人負責這一批報名，之後用「批次代碼＋送出人手機」查詢、修改整批資料。送出人不一定要參加。</div>'
+  let h='<div class="card"><div style="font-weight:800;margin-bottom:6px">填表人</div>'
+    +'<div class="csv-hint">填表人負責這一批報名，之後用「批次代碼＋填表人手機」查詢、修改整批資料。填表人不一定要參加。</div>'
     +'<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="'+ns+'_sbName" type="text" class="input" value="'+esc(sb.name||'')+'"></div>'
     +'<div class="input-group"><label>手機號碼（09開頭10碼） <span class="required-star">*</span></label><input id="'+ns+'_sbPhone" type="tel" class="input" placeholder="0912345678" value="'+esc(sb.phone||'')+'" oninput="applyHalf(this)"></div>'
     +'<div class="input-group"><label>E-Mail</label><input id="'+ns+'_sbEmail" type="email" class="input" value="'+esc(sb.email||'')+'"></div></div>';
@@ -1581,9 +1581,9 @@ function mfRead(st){
   const ns=st.ns, fs=st.ev.fieldSettings||{};
   const vm=mfRefresh(ns);
   const submitter={name:document.getElementById(ns+'_sbName').value.trim(), phone:document.getElementById(ns+'_sbPhone').value.trim(), email:document.getElementById(ns+'_sbEmail').value.trim()};
-  if(!submitter.name) return {error:'請填寫送出人姓名'};
-  if(!/^09\d{8}$/.test(submitter.phone)) return {error:'請填寫正確的送出人手機（09開頭10碼）'};
-  if(submitter.email&&!validateEmail(submitter.email)) return {error:'送出人 Email 格式錯誤'};
+  if(!submitter.name) return {error:'請填寫填表人姓名'};
+  if(!/^09\d{8}$/.test(submitter.phone)) return {error:'請填寫正確的填表人手機（09開頭10碼）'};
+  if(submitter.email&&!validateEmail(submitter.email)) return {error:'填表人 Email 格式錯誤'};
   const persons=[];
   for(let i=0;i<st.keys.length;i++){
     const k=st.keys[i], P=ns+k+'_', v=id=>(document.getElementById(P+id)?.value||'').trim();
@@ -1689,31 +1689,85 @@ function showBatchSuccess(res, submitter){
     +'<div style="font-size:.82rem;color:var(--muted);margin:4px 0 14px">'+esc(curSignupEvent?.name||'')+(curSignupEvent?.date?'（'+esc(curSignupEvent.date)+'）':'')+'</div>'
     +'<div style="font-size:.75rem;color:var(--muted)">批次代碼</div>'
     +'<div id="batchCodeShow" class="mono" style="font-size:2rem;font-weight:900;color:var(--accent);letter-spacing:3px">'+esc(res.batchCode||'')+'</div>'
-    +'<div class="csv-hint" style="text-align:left;margin-top:12px;color:var(--text)">請記下批次代碼。送出人（'+esc(submitter.name)+'）可在「查詢報名／修改」分頁，用「批次代碼＋手機 '+esc(submitter.phone)+'」查詢、修改整批資料；每位參加者也可以用自己的編號、姓名、性別、生日個別查詢。</div></div>';
+    +'<div class="csv-hint" style="text-align:left;margin-top:12px;color:var(--text)">請記下批次代碼。填表人（'+esc(submitter.name)+'）可在「查詢報名／修改」分頁，用「批次代碼＋手機 '+esc(submitter.phone)+'」查詢、修改整批資料；每位參加者也可以用自己的編號、姓名、性別、生日個別查詢。</div></div>';
+  h+='<button class="btn btn-primary btn-full" style="margin:-4px 0 14px" onclick="saveAllBatchPng()">📥 全部存成圖片（'+(res.persons||[]).length+' 張）</button>';
   (res.persons||[]).forEach((p,i)=>{
     h+='<div id="batchCard_'+i+'" class="card"></div><button class="btn btn-ghost" style="width:100%;margin:-4px 0 14px" onclick="saveBatchCardPng('+i+')">📥 存成圖片（'+esc(p.name)+'）</button>';
   });
   content.innerHTML=h;
-  (res.persons||[]).forEach((p,i)=>renderRegInfo(document.getElementById('batchCard_'+i),{...p,title:'報名成功！',icon:'✅',eventName:curSignupEvent?.name,eventDate:curSignupEvent?.date}));
+  (res.persons||[]).forEach((p,i)=>renderRegInfo(document.getElementById('batchCard_'+i),{...p,title:'報名成功！',icon:'✅',eventName:curSignupEvent?.name,eventDate:curSignupEvent?.date,ev:curSignupEvent}));
   window.scrollTo(0,0);
+}
+// 全部存成圖片：手機用系統分享（可一次存到相簿或傳到 LINE）；電腦下載 ZIP；都不行就逐張下載
+window.saveAllBatchPng=async function(){
+  const ps=lastBatchInfo?.persons||[]; if(!ps.length) return;
+  showToast('正在產生 '+ps.length+' 張圖片...');
+  const files=[];
+  for(let i=0;i<ps.length;i++){
+    const cv=await renderElementCanvas(document.getElementById('batchCard_'+i));
+    if(!cv){ showToast('圖片產生失敗，請改用截圖保存','error'); return; }
+    const blob=await new Promise(r=>cv.toBlob(r,'image/png'));
+    files.push(new File([blob],'報名資訊_'+(ps[i].bibNumber||'')+'_'+(ps[i].name||'')+'.png',{type:'image/png'}));
+  }
+  const isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  if(isMobile&&navigator.canShare&&navigator.canShare({files})){
+    // 分享一定要在使用者點擊當下呼叫，產生圖片花了時間，所以再請使用者點一次
+    showShareFilesOverlay(files);
+    return;
+  }
+  const zipName='報名資訊_'+(lastBatchInfo.batchCode||'')+'.zip';
+  try{
+    await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+    const zip=new JSZip(); files.forEach(f=>zip.file(f.name,f));
+    downloadBlob(await zip.generateAsync({type:'blob'}), zipName);
+    showToast('已下載 '+zipName);
+  }catch(e){
+    for(const f of files){ downloadBlob(f,f.name); await new Promise(r=>setTimeout(r,400)); }
+    showToast('已逐張下載 '+files.length+' 張圖片');
+  }
+};
+function loadScriptOnce(src){
+  return new Promise((ok,fail)=>{
+    if(document.querySelector('script[src="'+src+'"]')&&window.JSZip) return ok();
+    const sc=document.createElement('script'); sc.src=src; sc.onload=()=>ok(); sc.onerror=()=>fail(new Error('load'));
+    document.head.appendChild(sc);
+  });
+}
+function showShareFilesOverlay(files){
+  let ov=document.getElementById('pngPreviewOverlay'); if(ov) ov.remove();
+  ov=document.createElement('div'); ov.id='pngPreviewOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:14px';
+  ov.innerHTML='<div style="color:#fff;font-weight:700;font-size:1rem;text-align:center">'+files.length+' 張圖片已準備好</div>'
+    +'<div style="color:#ddd;font-size:.85rem;text-align:center">按「分享／儲存」後，選「儲存 '+files.length+' 張影像」可存到相簿，或直接分享到 LINE</div>'
+    +'<div style="display:flex;gap:8px;width:100%;max-width:360px"><button class="btn btn-ghost" style="flex:1" data-act="close">關閉</button>'
+    +'<button class="btn btn-primary" style="flex:1" data-act="share">分享／儲存</button></div>';
+  ov.addEventListener('click',async e=>{
+    const act=e.target.dataset?.act;
+    if(act==='close'||e.target===ov){ ov.remove(); return; }
+    if(act==='share'){
+      try{ await navigator.share({files}); ov.remove(); }
+      catch(err){ if(err.name!=='AbortError'){ for(const f of files) downloadBlob(f,f.name); ov.remove(); } }
+    }
+  });
+  document.body.appendChild(ov);
 }
 window.saveBatchCardPng=function(i){
   const p=(lastBatchInfo?.persons||[])[i]||{};
   saveElementAsPng(document.getElementById('batchCard_'+i),'報名資訊_'+(p.bibNumber||'')+'_'+(p.name||'')+'.png');
 };
 
-// ── 查詢分頁：批次代碼＋送出人手機 ──
+// ── 查詢分頁：批次代碼＋填表人手機 ──
 function batchQueryCardHtml(){
   return '<div class="card"><div style="font-weight:800;margin-bottom:4px">多人報名：查詢整批</div>'
-    +'<div class="csv-hint">用多人報名時拿到的批次代碼，加上送出人手機，查詢、修改整批資料。</div>'
+    +'<div class="csv-hint">用多人報名時拿到的批次代碼，加上填表人手機，查詢、修改整批資料。</div>'
     +'<div class="input-group"><label>批次代碼</label><input id="bqCode" type="text" class="input" placeholder="例：BXXXXXX" style="text-transform:uppercase" oninput="applyHalf(this)"></div>'
-    +'<div class="input-group"><label>送出人手機</label><input id="bqPhone" type="tel" class="input" placeholder="0912345678" oninput="applyHalf(this)"></div>'
+    +'<div class="input-group"><label>填表人手機</label><input id="bqPhone" type="tel" class="input" placeholder="0912345678" oninput="applyHalf(this)"></div>'
     +'<button class="btn btn-primary btn-full" onclick="doBatchQuery()">🔍 查詢整批</button></div>';
 }
 window.doBatchQuery=async function(cred){
   const code=(cred?cred.code:document.getElementById('bqCode').value).trim().toUpperCase();
   const phone=(cred?cred.phone:document.getElementById('bqPhone').value).trim();
-  if(!code||!phone){ showToast('請填寫批次代碼與送出人手機','error'); return; }
+  if(!code||!phone){ showToast('請填寫批次代碼與填表人手機','error'); return; }
   const out=document.getElementById('statusResult');
   out.innerHTML='<div class="card"><div class="loading-cell">查詢中...</div></div>';
   try{
@@ -1773,8 +1827,38 @@ function showSignupSuccess(info){
   lastSignupInfo=info;
   content.innerHTML='<div id="signupResultCard" class="card"></div>'
     +'<button class="btn btn-primary" style="width:100%;margin-top:-4px" onclick="saveSignupResultPng()">📥 存成圖片（PNG）</button>';
-  renderRegInfo(document.getElementById('signupResultCard'),{...info,title:'報名成功！',icon:'✅'});
+  renderRegInfo(document.getElementById('signupResultCard'),{...info,title:'報名成功！',icon:'✅',ev:curSignupEvent});
 }
+
+// ── 報到設定與報名資訊卡說明 ──
+// ev.checkin = { required, bib, qr }：需不需要報到；報到方式可複選或都不選（都不選＝報到時用姓名查找）
+// 沒設定過的舊活動＝需要報到、編號與 QR Code 都可用（跟原本一樣）
+function checkinCfg(ev){
+  const c=(ev||{}).checkin;
+  if(!c||typeof c!=='object') return {required:true, bib:true, qr:true};
+  const req=c.required!==false;
+  return {required:req, bib:req&&c.bib===true, qr:req&&c.qr===true};
+}
+// 報名資訊卡下方的說明：依「報到方式」與「查詢修改是否一定要編號」組合
+function regInfoNote(ev){
+  const c=checkinCfg(ev), needBib=(ev||{}).queryRequireBib===true;
+  const qOk='查詢、修改報名只要姓名、性別、生日，不需要編號。';
+  let t;
+  if(!c.required){
+    t='此活動不需要報到。'+(needBib?'查詢、修改報名時需要編號，請記下編號或存成圖片。':qOk);
+  } else if(c.qr){
+    t='活動當天報到時請出示 QR Code'+(c.bib?' 或告知編號':'')+'，請把這張圖片存起來或截圖。'
+      +(needBib?'查詢、修改報名時也需要編號。':'查詢、修改報名則只要姓名、性別、生日。');
+  } else if(c.bib){
+    t='活動當天報到時請告知編號'+(needBib?'，查詢、修改報名時也需要編號':'')+'。請記下編號，怕忘記可以存成圖片。'
+      +(needBib?'':'查詢、修改報名則只要姓名、性別、生日。');
+  } else {
+    t='活動當天報到時告知姓名即可，不需要編號或圖片。'
+      +(needBib?'不過查詢、修改報名時需要編號，請記下編號或存成圖片。':qOk);
+  }
+  return t+'查詢歷次報名紀錄請使用上方 ID。';
+}
+const showRegQr=ev=>checkinCfg(ev).qr;
 
 // ── 報名資訊卡（報名成功畫面、查詢報名結果共用同一個版面，存成的圖片也一致）──
 // info: {title, icon, eventName, eventDate, name, group, bibNumber, uniqueId}
@@ -1795,11 +1879,12 @@ function renderRegInfo(el,info){
   html+='<span style="font-size:.75rem;color:var(--muted);margin-right:6px">ID（查詢報名紀錄用）</span>';
   html+='<span style="font-family:var(--mono);font-size:1.05rem;font-weight:700;color:var(--accent);letter-spacing:.5px">'+esc(info.uniqueId||'-')+'</span>';
   html+='</div>';
-  html+='<div class="qr-box" data-role="qr"></div>';
-  html+='<div class="csv-hint" style="text-align:left;margin:16px 0 0;color:var(--text)">請儲存此圖片（或截圖）保存 QR Code，活動當天報到時使用。或記得編號，於「查詢報名／修改」分頁重新查詢；查詢歷次報名紀錄請使用上方 ID。</div>';
+  const ev=info.ev||{};
+  if(showRegQr(ev)) html+='<div class="qr-box" data-role="qr"></div>';
+  html+='<div class="csv-hint" style="text-align:left;margin:16px 0 0;color:var(--text)">'+esc(regInfoNote(ev))+'</div>';
   html+='</div>';
   el.innerHTML=html;
-  makeQRCode(el.querySelector('[data-role="qr"]'), [info.uniqueId,info.bibNumber||''].join('|'), 200);
+  if(showRegQr(ev)) makeQRCode(el.querySelector('[data-role="qr"]'), [info.uniqueId,info.bibNumber||''].join('|'), 200);
 }
 let lastSignupInfo=null;
 window.saveSignupResultPng=function(){
@@ -1815,6 +1900,18 @@ async function saveElementAsPng(el,filename){
   if(!el)return;
   if(typeof html2canvas==='undefined'){showToast('圖片功能載入失敗，請改用截圖保存','error');return;}
   showToast('正在產生圖片...');
+  const canvas=await renderElementCanvas(el);
+  if(!canvas){showToast('圖片產生失敗，請改用截圖保存','error');return;}
+  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
+  const isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    ||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1); // iPadOS 會偽裝成 Mac
+  if(isMobile||!blob){showPngPreview(canvas.toDataURL('image/png'),blob,filename);return;}
+  downloadBlob(blob,filename);
+  showToast('圖片已下載');
+}
+// 把畫面區塊畫成 canvas（失敗回傳 null）
+async function renderElementCanvas(el){
+  if(!el||typeof html2canvas==='undefined') return null;
   let canvas;
   try{
     const bg=getComputedStyle(document.body).backgroundColor||'#0f1117';
@@ -1826,13 +1923,8 @@ async function saveElementAsPng(el,filename){
         const c=doc.getElementById(el.id);
         if(c)Object.assign(c.style,{padding:'20px',border:'1px solid #2e3349',borderRadius:'14px',background:'#1a1d27'});
       }});
-  }catch(e){showToast('圖片產生失敗，請改用截圖保存','error');return;}
-  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
-  const isMobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-    ||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1); // iPadOS 會偽裝成 Mac
-  if(isMobile||!blob){showPngPreview(canvas.toDataURL('image/png'),blob,filename);return;}
-  downloadBlob(blob,filename);
-  showToast('圖片已下載');
+  }catch(e){return null;}
+  return canvas;
 }
 function downloadBlob(blob,filename){
   const url=URL.createObjectURL(blob);
@@ -1920,9 +2012,10 @@ async function selectStatusEvent(eventId, keepWrapper){
   const bibPlaceholder=String(1).padStart(pad,'0');
   document.getElementById('statusResult').innerHTML='';
 
+  const needBib=curStatusEvent.queryRequireBib===true;
   const formHtml='<div class="card">'
-    +'<div class="csv-hint">輸入編號、姓名、性別、生日查詢報名記錄，開放報名期間可修改資料。</div>'
-    +'<div class="input-group"><label>編號</label>'
+    +'<div class="csv-hint">'+(needBib?'輸入編號、姓名、性別、生日查詢報名記錄':'輸入姓名、性別、生日查詢報名記錄（編號可不填）')+'，開放報名期間可修改資料。</div>'
+    +'<div class="input-group"><label>'+(needBib?'編號':'編號（選填）')+'</label>'
     +'<input id="statusBib" type="text" class="input" placeholder="例：'+bibPlaceholder+'" oninput="applyHalf(this)"></div>'
     +'<div class="input-group"><label>姓名</label>'
     +'<input id="statusName" type="text" class="input" placeholder="王小明"></div>'
@@ -1958,7 +2051,8 @@ window.doStatusQuery=async function(){
   const gender=document.getElementById('statusGender').value;
   const birthday=document.getElementById('statusBirthday').value.trim();
   const result=document.getElementById('statusResult');
-  if(!bib||!name||!gender||!birthday){showToast('請填寫全部四個欄位','error');return;}
+  const needBib=curStatusEvent.queryRequireBib===true;
+  if(!name||!gender||!birthday||(needBib&&!bib)){showToast(needBib?'請填寫全部四個欄位':'請填寫姓名、性別、生日','error');return;}
   result.innerHTML='<div class="card"><div class="loading-cell">查詢中...</div></div>';
 
   const eventId=curStatusEvent.id;
@@ -1972,6 +2066,10 @@ window.doStatusQuery=async function(){
   }
   statusCred={name,gender,birthday};
   statusCache={};
+  if(res.needBib){
+    result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">找到多筆相同姓名、性別、生日的資料，請加填編號再查詢</div></div>';
+    return;
+  }
 
   let html=''; let found=false;
   const matched=[];
@@ -2006,7 +2104,7 @@ window.doStatusQuery=async function(){
     html+='</div>';
   }
   if(!found){
-    result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">查無資料，請確認四項資料是否正確</div></div>';
+    result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">查無資料，請確認'+(bib?'編號、':'')+'姓名、性別、生日是否正確</div></div>';
     return;
   }
   result.innerHTML=html;
@@ -2021,7 +2119,7 @@ function renderStatusInfo(cardId, entryDocId){
   if(!m||!el)return;
   const ev=curStatusEvent||{};
   renderRegInfo(el,{
-    title:'報名資訊', icon:'📋',
+    title:'報名資訊', icon:'📋', ev,
     eventName:ev.name||'', eventDate:ev.date||'',
     name:m.profile.name||'', group:m.entry.group||'-',
     bibNumber:m.entry.bibNumber||'', uniqueId:m.entry.uniqueId
@@ -2217,7 +2315,7 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   html+='</div>';
   box.innerHTML=html;
   box.dataset.customFields=JSON.stringify(customFields);
-  // 多人報名的成員：共用欄位只能由送出人用「批次代碼＋手機」修改，這裡鎖住；顯示狀態以整批的資料為準
+  // 多人報名的成員：共用欄位只能由填表人用「批次代碼＋手機」修改，這裡鎖住；顯示狀態以整批的資料為準
   if(e.batchCode){
     const sids=cfSharedIds(customFields);
     box.dataset.cffixed=JSON.stringify(cfFixedFromStored(customFields,customData));
@@ -2226,7 +2324,7 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
       if(!sids.has(f.id))return;
       const row=document.getElementById(cardId+'_ecf_row_'+f.id); if(!row)return;
       row.querySelectorAll('input,select,textarea').forEach(el=>{el.disabled=true;});
-      if(!noted){ row.insertAdjacentHTML('beforebegin','<div class="csv-hint">此筆是多人報名（批次 '+esc(e.batchCode)+'），共同填寫的欄位請由送出人用「批次代碼＋手機」修改。</div>'); noted=true; }
+      if(!noted){ row.insertAdjacentHTML('beforebegin','<div class="csv-hint">此筆是多人報名（批次 '+esc(e.batchCode)+'），共同填寫的欄位請由填表人用「批次代碼＋手機」修改。</div>'); noted=true; }
     });
   } else delete box.dataset.cffixed;
   // 儲存時重算家長需求要用到的資料

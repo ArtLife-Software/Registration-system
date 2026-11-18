@@ -1185,7 +1185,7 @@ window.createNextPeriod=async function(){
     const data={ name, date, organizer:src.organizer||'', seriesId:st.sid, seriesNo:no,
       registrationOpen:false, staffRegistrationOpen:false, groupNames:[],
       createdAt:serverTimestamp(), updatedAt:serverTimestamp(), copiedFrom:srcId||'' };
-    if(items.has('capacity')) Object.assign(data, pick(['registrationCapacity','multiSignup','showCapacity','entryCountDisplay','entryCountThreshold',
+    if(items.has('capacity')) Object.assign(data, pick(['registrationCapacity','multiSignup','checkin','queryRequireBib','showCapacity','entryCountDisplay','entryCountThreshold',
       'bibPadLength','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax']));
     if(items.has('banner')) Object.assign(data, pick(['bannerUrl','bannerLinkText','bannerLinkUrl','staffBannerUrl','staffBannerLinkText','staffBannerLinkUrl']));
     if(items.has('staffForm')) Object.assign(data, pick(['staffCustomFields','staffFieldSettings']));
@@ -1255,6 +1255,7 @@ window.showAddEvent = async function() {
   ['evRegStartTime','evRegEndTime','evStaffRegStartTime','evStaffRegEndTime'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('evRegCapacity').value='';
   document.getElementById('evMultiEnabled').checked=false; document.getElementById('evMultiMax').value=''; document.getElementById('evMultiMaxRow').style.display='none';
+  setEvCheckinForm({});
   document.getElementById('evShowCapacity').checked=true;
   document.getElementById('evEntryCountDisplay').value='threshold';
   document.getElementById('evEntryCountThreshold').value='0';
@@ -1286,6 +1287,7 @@ window.editEvent = async function(id) {
   document.getElementById('evMultiEnabled').checked=ev.multiSignup?.enabled===true;
   document.getElementById('evMultiMax').value=ev.multiSignup?.max||'';
   document.getElementById('evMultiMaxRow').style.display=ev.multiSignup?.enabled===true?'':'none';
+  setEvCheckinForm(ev);
   document.getElementById('evShowCapacity').checked=ev.showCapacity!==false;
   document.getElementById('evEntryCountDisplay').value=ev.entryCountDisplay||'threshold';
   document.getElementById('evEntryCountThreshold').value=ev.entryCountThreshold??0;
@@ -1376,6 +1378,18 @@ function stripDeleteFields(obj){
   Object.keys(obj).forEach(k=>{ const v=obj[k]; if(v&&typeof v.isEqual==='function'&&v.isEqual(DEL)) delete obj[k]; });
   return obj;
 }
+// 活動表單：報到設定（舊活動沒設定過＝需要報到、編號與 QR Code 都勾）
+function setEvCheckinForm(ev){
+  const c=checkinCfg(ev);
+  document.getElementById('evCheckinRequired').checked=c.required;
+  document.getElementById('evCheckinBib').checked=c.required?c.bib:true;
+  document.getElementById('evCheckinQr').checked=c.required?c.qr:true;
+  document.getElementById('evQueryRequireBib').checked=ev.queryRequireBib===true;
+  onEvCheckinChange();
+}
+window.onEvCheckinChange=function(){
+  document.getElementById('evCheckinMethodsRow').style.display=document.getElementById('evCheckinRequired').checked?'':'none';
+};
 window.saveEvent = async function() {
   // 儲存前驗證所有日期欄位格式（yyyy/mm/dd，留空視為未設定，格式錯誤則擋住）
   const dateFields = [
@@ -1454,6 +1468,8 @@ window.saveEvent = async function() {
   const data = {
     ...seriesFields,
     multiSignup:{enabled:document.getElementById('evMultiEnabled').checked, max:multiMax>=2&&multiMax<=50?multiMax:10},
+    checkin:{required:document.getElementById('evCheckinRequired').checked, bib:document.getElementById('evCheckinBib').checked, qr:document.getElementById('evCheckinQr').checked},
+    queryRequireBib:document.getElementById('evQueryRequireBib').checked,
     name:document.getElementById('evName').value.trim(),
     date:document.getElementById('evDate').value,
     organizer:document.getElementById('evOrganizer').value.trim(),
@@ -1990,6 +2006,8 @@ window.loadEntries=async function(){
   tbody.innerHTML='<tr><td colspan="'+baseCols+'" class="loading-cell">載入中...</td></tr>';
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',eventId));
   curEntryCustomFields=evDoc.data()?.customFields||[];
+  curEntryEv=evDoc.data()||{};
+  document.getElementById('entriesTable').classList.toggle('no-checkin',!checkinCfg(curEntryEv).required); // 不需報到的活動隱藏報到欄
   curBibPadLength=evDoc.data()?.bibPadLength||3;
   curBibRange={min:evDoc.data()?.bibRangeMin||0, max:evDoc.data()?.bibRangeMax||0};
   curCustomBibRange={min:evDoc.data()?.customBibRangeMin||0, max:evDoc.data()?.customBibRangeMax||0};
@@ -2009,7 +2027,7 @@ window.loadEntries=async function(){
     ).join('')
     +cfDataFields(curEntryCustomFields).map(f=>'<th data-sort="customData.'+f.id+'" onclick="sortTable(\'entriesTableBody\',\'customData.'+f.id+'\')">'+esc(f.label)+'<span class="sort-icon"> ⇅</span></th>').join('')
     +'<th data-sort="createdAt" onclick="sortTable(\'entriesTableBody\',\'createdAt\')">報名時間<span class="sort-icon"> ⇅</span></th>'
-    +'<th data-sort="checkin.checkedInAt" onclick="sortTable(\'entriesTableBody\',\'checkin.checkedInAt\')">報到<span class="sort-icon"> ⇅</span></th>'
+    +'<th class="ci-col" data-sort="checkin.checkedInAt" onclick="sortTable(\'entriesTableBody\',\'checkin.checkedInAt\')">報到<span class="sort-icon"> ⇅</span></th>'
     +'<th>操作</th>';
   const snap=await getDocs(collection(db,'systems',SYS,'events',eventId,'runners'));
   const uniqueIds=snap.docs.map(d=>d.data().uniqueId);
@@ -2055,9 +2073,9 @@ function renderEntries(list){
       customCells+='<td>'+(v!==''?esc(v):'-')+'</td>';
     });
     const checkinCell=ci
-      ?'<td><span class="badge badge-green">✅ 已報到</span><div style="font-size:.7rem;color:var(--muted)">'+(ci.checkedInAt?.toDate?ci.checkedInAt.toDate().toLocaleTimeString('zh-TW',{hour12:false}):'-')+'</div>'
+      ?'<td class="ci-col"><span class="badge badge-green">✅ 已報到</span><div style="font-size:.7rem;color:var(--muted)">'+(ci.checkedInAt?.toDate?ci.checkedInAt.toDate().toLocaleTimeString('zh-TW',{hour12:false}):'-')+'</div>'
         +'<button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="cancelCheckin(\''+eventId+'\',\''+e.uniqueId+'\')">取消報到</button></td>'
-      :'<td><button class="btn btn-sm btn-ghost" onclick="manualCheckin(\''+eventId+'\',\''+e.uniqueId+'\')">標記報到</button></td>';
+      :'<td class="ci-col"><button class="btn btn-sm btn-ghost" onclick="manualCheckin(\''+eventId+'\',\''+e.uniqueId+'\')">標記報到</button></td>';
     const cancelBadge=e.cancelRequested?' <span class="badge" style="background:rgba(239,68,68,.1);color:var(--red);border-color:rgba(239,68,68,.3)">⚠️ 申請取消中</span>':'';
     const rejectBtn=e.cancelRequested?'<button class="btn btn-sm btn-ghost" onclick="rejectCancelRequest(\''+e.id+'\')">駁回申請</button> ':'';
     const ma=e.matchAudit;
@@ -2091,7 +2109,7 @@ function renderEntries(list){
       +'</td></tr>';
   }).join('');
 }
-// ── 多人報名的批次：送出人資料與成員 ──
+// ── 多人報名的批次：填表人資料與成員 ──
 window.showBatchInfo=async function(code){
   const eventId=document.getElementById('entryEventSelect').value;
   const bSnap=await getDoc(doc(db,'systems',SYS,'events',eventId,'batches',code));
@@ -2102,8 +2120,8 @@ window.showBatchInfo=async function(code){
   const sharedFields=cfDataFields(curEntryCustomFields).filter(f=>sids.has(f.id)&&(b.sharedData||{})[f.id]!==undefined);
   document.getElementById('batchInfoBody').innerHTML=
     '<div style="font-size:.8rem;color:var(--muted)">批次代碼</div><div class="mono" style="font-size:1.2rem;font-weight:800;margin-bottom:10px">'+esc(code)+'</div>'
-    +(bSnap.exists()?'':'<div class="csv-hint">找不到這個批次的送出人資料</div>')
-    +'<div style="font-size:.85rem;line-height:1.8"><strong>送出人：</strong>'+esc(sb.name||'-')+'　'+esc(sb.phone||'-')+(sb.email?'　'+esc(sb.email):'')
+    +(bSnap.exists()?'':'<div class="csv-hint">找不到這個批次的填表人資料</div>')
+    +'<div style="font-size:.85rem;line-height:1.8"><strong>填表人：</strong>'+esc(sb.name||'-')+'　'+esc(sb.phone||'-')+(sb.email?'　'+esc(sb.email):'')
     +'<br><strong>送出時間：</strong>'+fmtDT(b.createdAt)+'　<strong>人數：</strong>'+members.length+(b.count&&b.count!==members.length?'（送出時 '+b.count+' 位）':'')+'</div>'
     +(sharedFields.length?'<div style="margin-top:8px;font-size:.82rem"><strong>共同填寫</strong>'+sharedFields.map(f=>'<div>'+esc(f.label)+'：'+esc(cfDisplayValue(f,b.sharedData[f.id])||'-')+'</div>').join('')+'</div>':'')
     +'<div style="margin-top:10px;font-size:.85rem"><strong>成員</strong>'+members.map(e=>'<div>'+esc(e.bibNumber||'-')+'　'+esc(e.name||'')+'　<span class="badge">'+esc(e.group||'未分組')+'</span>'+(e.cancelRequested?' ⚠️ 申請取消中':'')+'</div>').join('')+'</div>';
@@ -3027,8 +3045,39 @@ window.saveEntry=async function(){
   }
 }
 
+// ── 報到設定與報名資訊卡說明 ──
+// ev.checkin = { required, bib, qr }：需不需要報到；報到方式可複選或都不選（都不選＝報到時用姓名查找）
+// 沒設定過的舊活動＝需要報到、編號與 QR Code 都可用（跟原本一樣）
+function checkinCfg(ev){
+  const c=(ev||{}).checkin;
+  if(!c||typeof c!=='object') return {required:true, bib:true, qr:true};
+  const req=c.required!==false;
+  return {required:req, bib:req&&c.bib===true, qr:req&&c.qr===true};
+}
+// 報名資訊卡下方的說明：依「報到方式」與「查詢修改是否一定要編號」組合
+function regInfoNote(ev){
+  const c=checkinCfg(ev), needBib=(ev||{}).queryRequireBib===true;
+  const qOk='查詢、修改報名只要姓名、性別、生日，不需要編號。';
+  let t;
+  if(!c.required){
+    t='此活動不需要報到。'+(needBib?'查詢、修改報名時需要編號，請記下編號或存成圖片。':qOk);
+  } else if(c.qr){
+    t='活動當天報到時請出示 QR Code'+(c.bib?' 或告知編號':'')+'，請把這張圖片存起來或截圖。'
+      +(needBib?'查詢、修改報名時也需要編號。':'查詢、修改報名則只要姓名、性別、生日。');
+  } else if(c.bib){
+    t='活動當天報到時請告知編號'+(needBib?'，查詢、修改報名時也需要編號':'')+'。請記下編號，怕忘記可以存成圖片。'
+      +(needBib?'':'查詢、修改報名則只要姓名、性別、生日。');
+  } else {
+    t='活動當天報到時告知姓名即可，不需要編號或圖片。'
+      +(needBib?'不過查詢、修改報名時需要編號，請記下編號或存成圖片。':qOk);
+  }
+  return t+'查詢歷次報名紀錄請使用上方 ID。';
+}
+const showRegQr=ev=>checkinCfg(ev).qr;
+
 // ── 新增參加者後的報名資訊（與參加者端 member.html 的「報名成功」畫面一致）──
 let lastEntryResultInfo=null;
+let curEntryEv=null; // 目前報名列表的活動資料（報名資訊卡依它的報到設定顯示）
 function adminUtf16to8(str){
   let out='';
   for(let i=0;i<str.length;i++){
@@ -3056,11 +3105,13 @@ function renderEntryInfoInto(el,info){
   html+='<span style="font-size:.75rem;color:var(--muted);margin-right:6px">ID（查詢報名紀錄用）</span>';
   html+='<span style="font-family:var(--mono);font-size:1.05rem;font-weight:700;color:var(--accent);letter-spacing:.5px">'+esc(info.uniqueId||'-')+'</span>';
   html+='</div>';
-  html+='<div data-role="qr" style="display:flex;flex-direction:column;align-items:center;padding:20px;background:#fff;border-radius:12px;margin-top:12px"></div>';
-  html+='<div class="csv-hint" style="text-align:left;margin:16px 0 0;color:var(--text)">請儲存此圖片（或截圖）保存 QR Code，活動當天報到時使用。或記得編號，於「查詢報名／修改」分頁重新查詢；查詢歷次報名紀錄請使用上方 ID。</div>';
+  const ev=info.ev||curEntryEv||{};
+  if(showRegQr(ev)) html+='<div data-role="qr" style="display:flex;flex-direction:column;align-items:center;padding:20px;background:#fff;border-radius:12px;margin-top:12px"></div>';
+  html+='<div class="csv-hint" style="text-align:left;margin:16px 0 0;color:var(--text)">'+esc(regInfoNote(ev))+'</div>';
   el.innerHTML=html;
   const qrEl=el.querySelector('[data-role="qr"]');
-  if(typeof QRCode!=='undefined'){
+  if(!qrEl){ /* 這個活動的報名資訊卡不顯示 QR Code */ }
+  else if(typeof QRCode!=='undefined'){
     // qrcode.js 畫好 canvas 之後，會「非同步」再切換成顯示 <img>、隱藏 canvas，
     // 直接操作它產生的元素會被事後蓋掉（之前 QR Code 消失就是這個原因）。
     // 所以改成在暫存容器裡讓它畫，馬上把 canvas 轉成圖片放進卡片，顯示結果不受它後續動作影響，
@@ -5418,6 +5469,7 @@ th[data-sort]:hover{color:var(--accent);}
 .cert-pick-group{position:sticky;top:0;padding:4px 10px;font-size:.7rem;font-weight:700;color:var(--muted);background:var(--surface2);}
 .cert-pick-row{display:flex;align-items:center;gap:8px;padding:5px 10px;font-size:.8rem;cursor:pointer;border-top:1px solid var(--border);}
 .cert-pick-row:hover{background:var(--surface2);}
+#entriesTable.no-checkin .ci-col{display:none}
 </style>
 </head>
 <body>
@@ -5626,7 +5678,7 @@ th[data-sort]:hover{color:var(--accent);}
         <select id="entrySearchKwSelect" class="input" style="display:none;flex:1;min-width:150px"></select>
         <button class="btn btn-ghost" onclick="doEntrySearch()">搜尋</button>
       </div>
-      <div class="table-wrap"><table><thead><tr id="entriesTableHead"><th style="width:36px"><input type="checkbox" id="entriesSelectAll" onchange="toggleSelectAll('entriesTableBody','entriesSelectAll','entriesBatchDeleteBtn','entriesBatchRejectBtn')"></th><th>編號</th><th>組別</th><th>ID</th><th>姓名</th><th>性別</th><th>生日</th><th>手機</th><th>Email</th><th>身分證</th><th>備註</th><th>操作</th></tr></thead><tbody id="entriesTableBody"><tr><td colspan="12" class="loading-cell">請先選擇活動</td></tr></tbody></table></div>
+      <div class="table-wrap"><table id="entriesTable"><thead><tr id="entriesTableHead"><th style="width:36px"><input type="checkbox" id="entriesSelectAll" onchange="toggleSelectAll('entriesTableBody','entriesSelectAll','entriesBatchDeleteBtn','entriesBatchRejectBtn')"></th><th>編號</th><th>組別</th><th>ID</th><th>姓名</th><th>性別</th><th>生日</th><th>手機</th><th>Email</th><th>身分證</th><th>備註</th><th>操作</th></tr></thead><tbody id="entriesTableBody"><tr><td colspan="12" class="loading-cell">請先選擇活動</td></tr></tbody></table></div>
     </div>
 
     <!-- 工作人員 -->
@@ -5745,9 +5797,21 @@ th[data-sort]:hover{color:var(--accent);}
           <div class="input-group" style="margin:0"><label>結束時間（hh:mm，空白＝23:59）</label><input id="evRegEndTime" type="time" class="input"></div>
         </div>
         <div class="input-group" style="margin-top:12px"><label>報名總人數（0 或留空＝無限制）</label><input id="evRegCapacity" type="number" min="0" class="input" placeholder="0"></div>
-        <div class="input-group" style="margin-top:12px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evMultiEnabled" onchange="document.getElementById('evMultiMaxRow').style.display=this.checked?'':'none'"> 開放多人報名（一位送出人一次幫多人報名）</label>
+        <div class="input-group" style="margin-top:12px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evMultiEnabled" onchange="document.getElementById('evMultiMaxRow').style.display=this.checked?'':'none'"> 開放多人報名（一位填表人一次幫多人報名）</label>
           <div id="evMultiMaxRow" style="display:none;margin-top:8px"><label>每次最多幾位（2～50，留空＝10）</label><input id="evMultiMax" type="number" min="2" max="50" class="input" placeholder="10">
-            <div style="font-size:.75rem;color:var(--muted);margin-top:4px">名額不夠時整批都不會報名成功；號碼一律自動配發；送出後會得到一組批次代碼，送出人用「批次代碼＋手機」查詢、修改整批資料。自訂欄位可在「區塊標題」設定「共同填寫」，整批只填一次。</div></div></div>
+            <div style="font-size:.75rem;color:var(--muted);margin-top:4px">名額不夠時整批都不會報名成功；號碼一律自動配發；送出後會得到一組批次代碼，填表人用「批次代碼＋手機」查詢、修改整批資料。自訂欄位可在「區塊標題」設定「共同填寫」，整批只填一次。</div></div></div>
+        <div class="input-group" style="margin-top:12px"><label>報到與查詢</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evCheckinRequired" onchange="onEvCheckinChange()"> 需要報到</label>
+          <div id="evCheckinMethodsRow" style="margin:6px 0 0 22px">
+            <div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">報到方式（可複選，也可都不選）</div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evCheckinBib"> 編號（後台、手機 App 或紙本名單，參加者要記編號）</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evCheckinQr"> QR Code（手機 App 掃描，參加者要存圖片）</label>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:4px">都不選＝報到時用姓名查找，參加者不用記編號、不用存圖片。後台名單搜尋後「標記報到」任何活動都能用。</div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;margin-top:8px"><input type="checkbox" id="evQueryRequireBib"> 查詢、修改報名時一定要填編號</label>
+          <div style="font-size:.72rem;color:var(--muted);margin:2px 0 0 22px">不勾＝只要姓名、性別、生日就能查詢（找到多筆時才要求編號），比較方便，但知道姓名和生日的人也能查到、修改。</div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:6px">報名成功畫面與報名資訊卡的說明、是否顯示 QR Code，會依這裡的設定調整。</div>
+        </div>
         <div class="input-group" style="margin-top:12px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evShowCapacity" checked> 在參加者報名表單顯示報名總人數上限</label></div>
         <div class="input-group" style="margin-top:12px"><label>已報名人數顯示</label>
           <select id="evEntryCountDisplay" class="input" onchange="onEvEntryCountDisplayChange()">
