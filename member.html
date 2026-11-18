@@ -564,7 +564,7 @@ async function selectSignupEvent(eventId, keepWrapper){
   const idShow=fs.idNumber?.show!==false;
   const idReq=fs.idNumber?.required===true;
 
-  formHtml+='<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="suName" type="text" class="input" placeholder="王小明"></div>';
+  formHtml+='<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="suName" type="text" class="input" placeholder="王小明"><div style="font-size:.72rem;color:var(--muted);margin-top:2px">以前報名過、後來改名的人：請先用舊名字報名，報名後再到「查詢報名」改名</div></div>';
   formHtml+='<div class="input-group"><label>性別 <span class="required-star">*</span></label><select id="suGender" class="input"><option value="">請選擇...</option><option value="男">男</option><option value="女">女</option></select></div>';
   formHtml+='<div class="input-group"><label>生日（yyyy/mm/dd）<span class="required-star">*</span></label>';
   formHtml+='<div class="input-row"><input id="suBirthday" data-fmt="ymd" type="text" class="input" placeholder="yyyy/mm/dd" oninput="applyHalf(this);updateParentalBlock()" onblur="setFieldError(\'suBirthday\',!validateBirthday(this.value.trim()));updateParentalBlock()">';
@@ -650,7 +650,7 @@ async function selectSignupEvent(eventId, keepWrapper){
 const bibInRangeFront=(n,c)=>(n>=c.autoMin&&n<=c.autoMax)||(n>=c.min&&n<=c.max);
 // 比對用的關鍵資料改了才重新比對（手機、Email 改了不重問；送出時伺服器會再確認比對對象沒變）
 const bibPreKey=pr=>[pr.name,pr.gender,pr.birthday,pr.idNumber].join('|');
-function newBibPre(){ return {key:'',own:0,matchDocId:'',decision:'',done:false}; }
+function newBibPre(){ return {key:'',own:0,identity:null,done:false}; }
 let suBibPre=newBibPre();
 const bibLookupTimers={};
 function bibLookupProfile(get){
@@ -664,20 +664,22 @@ async function runBibLookup(ev,pr,pre,who){
   if(key===pre.key) return false;
   Object.assign(pre,newBibPre(),{key});
   try{
+    let idq={};
     let res=(await callFn('bibLookup')({eventId:ev.id,...pr})).data;
-    if(key!==pre.key) return false;
-    if(res.status==='needs-confirmation'){
-      const cur={'姓名':pr.name,'性別':pr.gender,'生日':pr.birthday,'手機':pr.phone,'Email':pr.email,'身分證':pr.idNumber};
-      const choice=await showSamePersonDialog(res.fields,cur,{who,suggestRefill:res.suggestRefill||[],showRefillButton:true});
+    // 找到同姓名、同性別、同生日的人：當場確認身分（答案送出報名時一起帶上，不會再問一次）
+    while(res.status==='needs-identity'){
       if(key!==pre.key) return false;
-      if(choice==='refill'){ pre.key=''; return false; } // 改完資料會再比對一次
-      pre.matchDocId=res.matchDocId; pre.decision=choice;
-      res=choice==='same'?(await callFn('bibLookup')({eventId:ev.id,...pr,matchDecision:'same',matchDocId:res.matchDocId})).data:{oldNum:0};
-    }else if(res.matchDocId&&res.decision==='same'){ pre.matchDocId=res.matchDocId; pre.decision='same'; }
+      const nx=await askIdentity(res.step,idq,who);
+      if(key!==pre.key) return false;
+      if(!nx){ pre.done=true; return false; } // 取消：先不帶號碼，送出報名時會再確認
+      idq=nx;
+      res=(await callFn('bibLookup')({eventId:ev.id,...pr,identity:idq})).data;
+    }
+    pre.identity=idq;
     if(key!==pre.key) return false;
     pre.own=res.oldNum||0; pre.done=true;
     return true;
-  }catch(e){ pre.key=''; return false; }
+  }catch(e){ pre.key=''; if(/ID/.test(e.message||'')) showToast(e.message,'error'); return false; }
 }
 // 號碼欄位下方的說明（固定沿用不顯示號碼欄位，只顯示這段）
 function bibPreInfoHtml(ev,pre,cfg,inputId){
@@ -1323,52 +1325,97 @@ function waitForFreshTurnstileToken(timeoutMs=8000){
     })();
   });
 }
-// 顯示「找到相似資料」確認對話框，回傳 Promise<'same'|'new'|'refill'>（報名表單、參加者自助改資料共用）
-// fields: 伺服器回傳的欄位差異清單 [{label,status,value}]；curValues: 這次送出的值 {姓名:...,性別:...,...}
-async function showSamePersonDialog(fields,curValues,opts){
-  opts=opts||{};
-  const rows=(fields||[]).map(f=>{
-    let dbCell,rowStyle='';
-    if(f.status==='match'){rowStyle='color:var(--green)';dbCell=esc(f.value||'');}
-    else if(f.status==='db-empty'){dbCell='';}
-    else{rowStyle='color:var(--accent)';dbCell='<span style="font-size:.75rem;padding:2px 6px;background:rgba(249,115,22,.12);border-radius:4px;border:1px solid rgba(249,115,22,.3)">有差異</span>';}
-    const cur=curValues[f.label]||'';
-    return '<tr style="'+rowStyle+'">'
-      +'<td style="padding:4px 8px;font-size:.78rem;color:var(--muted);white-space:nowrap;border:none">'+esc(f.label)+'</td>'
-      +'<td style="padding:4px 8px;font-size:.85rem;word-break:break-all;border:none">'+dbCell+'</td>'
-      +'<td style="padding:4px 8px;font-size:.85rem;word-break:break-all;border:none">'+esc(cur)+'</td>'
-      +'</tr>';
-  }).join('');
-  const hintHtml=(opts.suggestRefill||[]).length
-    ?'<div style="font-size:.75rem;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.25);border-radius:8px;padding:8px 12px;margin-bottom:12px;line-height:1.6">'
-      +'💡 建議補填 <strong>'+esc(opts.suggestRefill.join('、'))+'</strong>，有助於進一步確認是否為同一人。'
-      +'<br><span style="color:var(--muted)">可點「重填」回到表單補充資料。</span></div>'
-    :'';
-  const warningText=opts.warningText||'⚠️ 若選「同一人」，則以新資料取代舊資料！';
-  const dialog=document.createElement('div');
-  dialog.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9998;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box';
-  let btnsHtml='<button id="dlgSame" class="btn btn-primary btn-sm">✅ 同一人</button>'
-    +'<button id="dlgNew" class="btn btn-ghost btn-sm">👤 非同一人</button>';
-  if(opts.showRefillButton!==false)btnsHtml+='<button id="dlgRefill" class="btn btn-ghost btn-sm">✏️ 重填</button>';
-  dialog.innerHTML='<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;max-width:480px;width:100%;box-sizing:border-box;overflow:hidden">'
-    +'<div style="font-size:1rem;font-weight:700;margin-bottom:4px">'+(opts.who?esc(opts.who)+'：':'')+'找到相似的資料</div>'
-    +'<div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">綠色為相符欄位；橘色欄位有差異，請確認是否為同一人。</div>'
-    +'<table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:14px">'
-    +'<colgroup><col style="width:52px"><col><col></colgroup>'
-    +'<thead><tr><th style="padding:4px 8px;font-size:.72rem;color:var(--muted);text-align:left;border:none"></th>'
-    +'<th style="padding:4px 8px;font-size:.72rem;color:var(--muted);text-align:left;border:none">資料庫</th>'
-    +'<th style="padding:4px 8px;font-size:.72rem;color:var(--muted);text-align:left;border:none">您填寫的</th></tr></thead>'
-    +'<tbody>'+rows+'</tbody></table>'
-    +hintHtml
-    +'<div style="font-size:.75rem;color:var(--accent);margin-bottom:12px">'+warningText+'</div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+btnsHtml+'</div></div>';
-  document.body.appendChild(dialog);
+// ── 確認身分（新增報名時，伺服器找到同名、同性別、同生日的人，需要報名者回答）──
+// step：ever＝以前報名過嗎；contact＝以前用的手機或 Email；idNumber＝身分證字號；uid＝ID
+// 回傳更新後的 idq（答案累積在裡面，再送一次）；按「取消」回傳 null
+function idDialog(o){
+  const dlg=document.createElement('div');
+  dlg.className='id-dialog';
+  dlg.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9998;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box';
+  const btns=(o.buttons||[]).map((b,i)=>'<button type="button" data-i="'+i+'" class="btn '+(b.primary?'btn-primary':'btn-ghost')+' btn-sm">'+esc(b.label)+'</button>').join('');
+  dlg.innerHTML='<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;max-width:480px;width:100%;box-sizing:border-box;max-height:90vh;overflow:auto">'
+    +'<div style="font-size:1rem;font-weight:700;margin-bottom:8px">'+(o.who?esc(o.who)+'：':'')+esc(o.title)+'</div>'
+    +(o.html||'')
+    +(o.input?'<input id="idDlgInput" class="input" style="width:100%;box-sizing:border-box;margin:6px 0 4px" placeholder="'+esc(o.input.placeholder||'')+'">'+'<div id="idDlgErr" style="font-size:.75rem;color:var(--red);min-height:1em"></div>':'')
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+btns+'</div></div>';
+  document.body.appendChild(dlg);
+  const inp=dlg.querySelector('#idDlgInput');
+  if(inp) setTimeout(()=>inp.focus(),30);
   return new Promise(resolve=>{
-    dialog.querySelector('#dlgSame').onclick=()=>{dialog.remove();resolve('same');};
-    dialog.querySelector('#dlgNew').onclick=()=>{dialog.remove();resolve('new');};
-    const refillBtn=dialog.querySelector('#dlgRefill');
-    if(refillBtn)refillBtn.onclick=()=>{dialog.remove();resolve('refill');};
+    dlg.querySelectorAll('button[data-i]').forEach(el=>el.onclick=()=>{
+      const b=o.buttons[+el.dataset.i];
+      const v=inp?inp.value.trim():'';
+      if(b.needInput){ const err=b.needInput(v); if(err){ dlg.querySelector('#idDlgErr').textContent=err; return; } }
+      dlg.remove(); resolve({value:b.value, input:v});
+    });
   });
+}
+const idWhyHtml='<div style="font-size:.82rem;line-height:1.7;margin-bottom:6px">系統裡已經有同姓名、同性別、同生日的參加者，需要確認你是不是同一人，才不會建立兩筆資料。</div>';
+async function askIdentity(step, idq, who){
+  idq={...(idq||{})};
+  if(step==='ever'){
+    const r=await idDialog({who, title:'以前報名過本單位的活動嗎？', html:idWhyHtml,
+      buttons:[{label:'是，報名過',value:'yes',primary:true},{label:'否，第一次報名',value:'no'},{label:'取消',value:'cancel'}]});
+    if(r.value==='cancel') return null;
+    idq.ever=r.value; return idq;
+  }
+  if(step==='contact'){
+    const r=await idDialog({who, title:'請填以前報名用的手機或 Email',
+      html:'<div style="font-size:.82rem;line-height:1.7">有好幾位同姓名、同性別、同生日的參加者，請填你以前報名時用的手機或 Email，用來找出你的資料。</div>',
+      input:{placeholder:'09xxxxxxxx 或 Email'},
+      buttons:[{label:'確定',value:'ok',primary:true,needInput:v=>(!v?'請填手機或 Email':(validatePhone(v)||/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v))?'':'格式不正確')},
+        {label:'不記得／沒填過',value:'skip'},{label:'取消',value:'cancel'}]});
+    if(r.value==='cancel') return null;
+    if(r.value==='skip'){ idq.noContact=true; return idq; }
+    if(r.input.includes('@')) idq.email=r.input; else idq.phone=r.input;
+    return idq;
+  }
+  if(step==='idNumber'){
+    const r=await idDialog({who, title:'請填身分證字號',
+      html:'<div style="font-size:.82rem;line-height:1.7">還是無法確定是哪一位，請填你的身分證字號（只用來比對，不會顯示）。</div>',
+      input:{placeholder:'A123456789'},
+      buttons:[{label:'確定',value:'ok',primary:true,needInput:v=>validateId(v.toUpperCase())&&v?'':'請填正確的身分證字號'},
+        {label:'以前沒填過',value:'skip'},{label:'取消',value:'cancel'}]});
+    if(r.value==='cancel') return null;
+    if(r.value==='skip'){ idq.noIdNumber=true; return idq; }
+    idq.idNumber=r.input.toUpperCase(); return idq;
+  }
+  if(step==='uid'){
+    const r=await idDialog({who, title:'請填你的 ID',
+      html:'<div style="font-size:.82rem;line-height:1.7">還是無法確定是哪一位，請填你的 ID。<br><span style="color:var(--muted)">ID 在以前的報名資訊卡上；也可以先到「查詢報名」用以前的報名資料查到 ID。查不到請聯絡主辦單位。</span></div>',
+      input:{placeholder:'ID'},
+      buttons:[{label:'確定',value:'ok',primary:true,needInput:v=>v?'':'請填 ID'},{label:'取消',value:'cancel'}]});
+    if(r.value==='cancel') return null;
+    idq.uid=r.input.toUpperCase(); return idq;
+  }
+  return null;
+}
+// 修改時改了姓名／性別／生日／身分證：警告不能換人，確定才繼續
+async function confirmIdentityChange(fields, who){
+  const r=await idDialog({who, title:'確定是同一人修改資料嗎？',
+    html:(fields&&fields.length?'<div style="font-size:.82rem;margin-bottom:6px">你改了：<strong>'+esc(fields.join('、'))+'</strong></div>':'')
+      +'<div style="font-size:.82rem;line-height:1.7;color:var(--accent)">系統不允許同一筆資料換不同人，若要換人，請先申請取消報名，再新增報名。</div>',
+    buttons:[{label:'確定，是同一人',value:'yes',primary:true},{label:'取消',value:'no'}]});
+  return r.value==='yes';
+}
+// 送出前的確認畫面：rows＝[[標籤,值]]，或 sections＝[{title,rows}]
+async function confirmBeforeSubmit(sections, title){
+  const tbl=rows=>'<table style="width:100%;border-collapse:collapse;margin-bottom:8px">'+rows.filter(r=>r[1]!==''&&r[1]!=null).map(r=>'<tr><td style="padding:3px 8px 3px 0;font-size:.78rem;color:var(--muted);white-space:nowrap;vertical-align:top;border:none">'+esc(r[0])+'</td><td style="padding:3px 0;font-size:.88rem;word-break:break-all;border:none">'+esc(String(r[1]))+'</td></tr>').join('')+'</table>';
+  const html=sections.map(s=>(s.title?'<div style="font-weight:700;font-size:.88rem;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">'+esc(s.title)+'</div>':'')+tbl(s.rows)).join('')
+    +'<div style="font-size:.78rem;color:var(--accent);margin-top:4px">請確認資料正確，尤其是姓名、性別、生日。</div>';
+  const r=await idDialog({title:title||'請確認報名資料', html, buttons:[{label:'確認送出',value:'ok',primary:true},{label:'返回修改',value:'back'}]});
+  return r.value==='ok';
+}
+// 自訂欄位顯示成確認畫面的列
+function cfConfirmRows(fields, data){
+  const rows=[];
+  (fields||[]).forEach(f=>{
+    if(f.type==='section'||!(f.id in (data||{}))) return;
+    let v=data[f.id];
+    if(Array.isArray(v)) v=v.join('、'); else if(v===true) v='是'; else if(v===false) v='否';
+    rows.push([f.label,v]);
+  });
+  return rows;
 }
 
 window.submitSignup=async function(){
@@ -1522,6 +1569,11 @@ window.submitSignup=async function(){
     //   - 重複報名檢查、流水號與號碼配發（不會撞號）
     // 上面的前端檢查只是使用體驗的預檢，把關以伺服器為準。
     // ══════════════════════════════════════════════════════════
+    // 送出前確認資料
+    btn.textContent='送出報名'; btn.disabled=false;
+    const okGo=await confirmBeforeSubmit([{rows:[['活動',curSignupEvent.name||''],['組別',g?.name||''],['姓名',name],['性別',gender],['生日',birthday],['手機',phone],['Email',email],['身分證',idNumber],['號碼',customBib],['備註',note]].concat(cfConfirmRows(curSignupCustomFields,customData))}]);
+    if(!okGo) return;
+    btn.textContent='送出中...'; btn.disabled=true;
     if(!currentTurnstileToken){showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error');btn.textContent='送出報名';btn.disabled=false;return;}
     const runnerSignupFn=callFn('runnerSignup');
     const payload={
@@ -1532,28 +1584,21 @@ window.submitSignup=async function(){
       parental:(parentalDataForSet.parentalConsentAgreed
         ?{consent:true,parentName:parentalDataForSet.parentName,parentPhone:parentalDataForSet.parentPhone}
         :null),
-      // 填表時已經確認過是不是同一人（帶出舊號碼時）：一起送出，不會再問一次
-      ...(suBibPre.decision&&suBibPre.key===bibPreKey(bibLookupProfile(f=>({name,gender,birthday,phone,email,idNumber})[f]||''))
-        ?{matchDecision:suBibPre.decision,matchDocId:suBibPre.matchDocId}:{matchDecision:null,matchDocId:''})
+      // 填表時已經確認過身分（帶出舊號碼時）：一起送出，不會再問一次
+      identity:(suBibPre.identity&&suBibPre.key===bibPreKey(bibLookupProfile(f=>({name,gender,birthday,phone,email,idNumber})[f]||'')))?suBibPre.identity:{}
     };
+    let idq=payload.identity;
     let res=(await runnerSignupFn(payload)).data;
-
-    // 找到相似參加者：顯示確認對話框（伺服器只回傳「哪些欄位有差異」，
-    // 不回傳資料庫裡的舊值，避免個資外洩），再帶著使用者的決定重新呼叫
-    if(res.status==='needs-confirmation'){
+    // 找到同姓名、同性別、同生日的人：一題一題確認身分，再帶著答案重送
+    while(res.status==='needs-identity'){
       btn.textContent='送出報名'; btn.disabled=false;
-      const curValues={'姓名':name,'性別':gender,'生日':birthday,'手機':phone,'Email':email,'身分證':idNumber};
-      const choice=await showSamePersonDialog(res.fields,curValues,{suggestRefill:res.suggestRefill});
-      if(choice==='refill') return;
+      const nx=await askIdentity(res.step,idq,'');
+      if(!nx){ resetTurnstileWidget(); return; }
+      idq=nx;
       btn.textContent='送出中...'; btn.disabled=true;
       resetTurnstileWidget();
       const freshToken=await waitForFreshTurnstileToken();
-      res=(await runnerSignupFn({...payload,turnstileToken:freshToken,matchDecision:choice,matchDocId:res.matchDocId})).data;
-      // 極少見：兩次呼叫之間比對對象變了，伺服器要求重新確認
-      if(res.status==='needs-confirmation'){
-        showToast('資料剛有變動，請再送出一次確認','error');
-        btn.textContent='送出報名'; btn.disabled=false; return;
-      }
+      res=(await runnerSignupFn({...payload,turnstileToken:freshToken,identity:idq})).data;
     }
 
     // 已報名過這場活動的情況，伺服器現在會直接拋錯（引導去用修改功能），
@@ -1655,6 +1700,7 @@ function mfPersonHtml(st, k, p){
     +'<div id="'+P+'bibPanel" style="display:none;margin-top:6px;padding:8px;background:var(--surface2);border-radius:8px"></div></div>';
   if(!st.edit) h+='<div id="'+P+'bibInfo" style="font-size:.82rem;margin:-6px 0 12px"></div>';
   h+=inp('name','姓名',true,pr.name,'王小明');
+  if(!st.edit) h+='<div style="font-size:.72rem;color:var(--muted);margin:-8px 0 10px">以前報名過、後來改名的人：請先用舊名字報名，報名後再改名</div>';
   h+='<div class="input-group"><label>性別 <span class="required-star">*</span></label><select id="'+P+'gender" class="input"><option value="">請選擇...</option>'
     +['男','女'].map(g=>'<option value="'+g+'"'+(pr.gender===g?' selected':'')+'>'+g+'</option>').join('')+'</select></div>';
   h+='<div class="input-group"><label>生日（yyyy/mm/dd） <span class="required-star">*</span></label><input id="'+P+'birthday" data-fmt="ymd" type="text" class="input" placeholder="yyyy/mm/dd" value="'+esc(pr.birthday||'')+'" oninput="applyHalf(this)"></div>';
@@ -1855,19 +1901,6 @@ function mfRead(st){
   if(rs.error) return {error:'共同填寫：'+rs.error};
   return {payload:{submitter, shared:rs.data, persons}};
 }
-// 伺服器說有人需要確認是否同一人：逐位問，回傳 decisions 陣列；有人選「重填」回傳 null
-async function mfAskDecisions(res, persons, allowRefill){
-  const decisions=[];
-  for(const c of res.persons||[]){
-    const p=persons[c.index]||{};
-    const cur={'姓名':p.name,'性別':p.gender,'生日':p.birthday,'手機':p.phone,'Email':p.email,'身分證':p.idNumber};
-    const choice=await showSamePersonDialog(c.fields, cur, {who:'第 '+(c.index+1)+' 位（'+(p.name||'')+'）', suggestRefill:c.suggestRefill||[], showRefillButton:allowRefill!==false});
-    if(choice==='refill') return null;
-    decisions[c.index]={matchDocId:c.matchDocId, decision:choice};
-  }
-  return decisions;
-}
-
 // ── 報名分頁：切換個人／多人報名 ──
 window.setSignupMode=function(mode){
   const single=document.getElementById('suSingleWrap'), multi=document.getElementById('suMultiWrap');
@@ -1888,29 +1921,42 @@ window.setSignupMode=function(mode){
     renderTurnstileWidget('turnstileContainer');
   }
 };
+// 多人報名的確認畫面內容
+function mfConfirmSections(st,pl){
+  const out=[{title:'填表人',rows:[['姓名',pl.submitter.name],['手機',pl.submitter.phone],['Email',pl.submitter.email||'']]}];
+  const sh=cfConfirmRows(mfSharedFields(st),pl.shared);
+  if(sh.length) out.push({title:'共同填寫',rows:sh});
+  pl.persons.forEach((p,i)=>out.push({title:'第 '+(i+1)+' 位',rows:[['組別',st.groupMap[p.groupId]?.name||''],['姓名',p.name],['性別',p.gender],['生日',p.birthday],['手機',p.phone],['Email',p.email],['身分證',p.idNumber],['號碼',p.customBib||''],['備註',p.note||'']].concat(cfConfirmRows(mfPersonFields(st),p.customData))}));
+  return out;
+}
 window.mfSubmitSignup=async function(ns){
   const st=MF[ns]; if(!st||st.busy) return;
   const r=mfRead(st);
   if(r.error){ showToast(r.error,'error'); return; }
   const btn=document.getElementById(ns+'_submitBtn');
   if(!currentTurnstileToken){ showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error'); return; }
-  st.busy=true; btn.disabled=true; btn.textContent='送出中...';
+  st.busy=true;
+  // 送出前確認資料
+  if(!(await confirmBeforeSubmit(mfConfirmSections(st,r.payload)))){ st.busy=false; return; }
+  btn.disabled=true; btn.textContent='送出中...';
   try{
     const fn=callFn('runnerBatchSignup');
-    // 填表時已經確認過的「是不是同一人」一起送出
-    const pre=st.keys.map(k=>{ const x=(st.pre||{})[k]; return (x&&x.decision&&x.key===bibPreKey(mfPersonProfile(ns,k)))?{matchDocId:x.matchDocId,decision:x.decision}:null; });
-    const payload={eventId:curSignupEvent.id, ...r.payload, turnstileToken:currentTurnstileToken, decisions:pre};
+    // 填表時已經確認過的身分一起送出
+    const identities=st.keys.map(k=>{ const x=(st.pre||{})[k]; return (x&&x.identity&&x.key===bibPreKey(mfPersonProfile(ns,k)))?x.identity:{}; });
+    const payload={eventId:curSignupEvent.id, ...r.payload, turnstileToken:currentTurnstileToken, identities};
     let res=(await fn(payload)).data;
-    if(res.status==='needs-confirmation'){
+    while(res.status==='needs-identity'){
       btn.disabled=false; btn.textContent='送出報名';
-      const asked=await mfAskDecisions(res, r.payload.persons, true);
-      if(!asked){ resetTurnstileWidget(); return; }
-      const decisions=pre.map((x,i)=>asked[i]||x);
+      for(const c of res.persons||[]){
+        const p=r.payload.persons[c.index]||{};
+        const nx=await askIdentity(c.step, identities[c.index], '第 '+(c.index+1)+' 位（'+(p.name||'')+'）');
+        if(!nx){ resetTurnstileWidget(); return; }
+        identities[c.index]=nx;
+      }
       btn.disabled=true; btn.textContent='送出中...';
       resetTurnstileWidget();
       const fresh=await waitForFreshTurnstileToken();
-      res=(await fn({...payload, turnstileToken:fresh, decisions})).data;
-      if(res.status==='needs-confirmation'){ showToast('資料剛有變動，請再送出一次確認','error'); resetTurnstileWidget(); return; }
+      res=(await fn({...payload, turnstileToken:fresh, identities})).data;
     }
     delete availBibSetByEvent[curSignupEvent.id];
     showBatchSuccess(res, r.payload.submitter);
@@ -2035,13 +2081,15 @@ window.mfSaveBatch=async function(ns){
   st.busy=true; btn.disabled=true; btn.textContent='儲存中...';
   try{
     const fn=callFn('runnerBatch');
-    const payload={eventId:st.ev.id, batchCode:st.cred.code, phone:st.cred.phone, action:'save', ...r.payload, decisions:[]};
+    const payload={eventId:st.ev.id, batchCode:st.cred.code, phone:st.cred.phone, action:'save', ...r.payload};
     let res=(await fn(payload)).data;
-    if(res.status==='needs-confirmation'){
-      const decisions=await mfAskDecisions(res, r.payload.persons, false);
-      if(!decisions) return;
-      res=(await fn({...payload, decisions})).data;
-      if(res.status==='needs-confirmation'){ showToast('資料剛有變動，請再儲存一次','error'); return; }
+    // 有人改了姓名、性別、生日或身分證：確認是同一人修改資料
+    if(res.status==='confirm-identity-change'){
+      for(const c of res.persons||[]){
+        const p=r.payload.persons[c.index]||{};
+        if(!(await confirmIdentityChange(c.fields||[], '第 '+(c.index+1)+' 位（'+(p.name||'')+'）'))) return;
+      }
+      res=(await fn({...payload, confirmIdentityChange:true})).data;
     }
     showToast('整批修改已儲存');
     await doBatchQuery({code:st.cred.code, phone:r.payload.submitter.phone});
@@ -2792,19 +2840,13 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
         ?{consent:document.getElementById(cardId+'_eParentalConsent')?.checked||false,
           parentName:document.getElementById(cardId+'_eParentName')?.value.trim()||'',
           parentPhone:document.getElementById(cardId+'_eParentPhone')?.value.trim()||''}
-        :null),
-      matchDecision:null,matchDocId:''
+        :null)
     };
     let res=(await callFn('runnerAction')(callPayload)).data;
-    // 身分欄位（姓名/性別/生日/手機/Email/身分證）改了之後跟別人的資料模糊相符：
-    // 顯示確認對話框，讓使用者確認是否為同一人（若真的是同一人，伺服器會直接拒絕這次修改）
-    if(res.status==='needs-confirmation'){
-      const curValues={'姓名':name,'性別':gender,'生日':birthday,'手機':phone,'Email':email,'身分證':idNumber};
-      const choice=await showSamePersonDialog(res.fields,curValues,{
-        showRefillButton:false,
-        warningText:'⚠️ 若選「同一人」，這次修改會被拒絕（身分資料不能跟別人重複）；選「非同一人」才會繼續送出修改。'
-      });
-      res=(await callFn('runnerAction')({...callPayload,matchDecision:choice,matchDocId:res.matchDocId})).data;
+    // 改了姓名、性別、生日或身分證：確認是同一人修改資料（不能換人）
+    if(res.status==='confirm-identity-change'){
+      if(!(await confirmIdentityChange(res.fields||[],''))) return;
+      res=(await callFn('runnerAction')({...callPayload,confirmIdentityChange:true})).data;
     }
     // 憑證與快取更新（姓名/性別/生日可能被改了，之後的動作要用新值驗證）
     statusCred=res.updatedCredentials||statusCred;

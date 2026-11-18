@@ -211,6 +211,44 @@ function adminEntryNum(e,groupsMap){
 
 // ── 只查指定 uniqueId 的參加者主檔，取代整個 runners 集合全表掃描 ──
 // Firestore 'in' 查詢上限30個，超過自動分批、平行查詢
+// ── 參加者資料修改歷史（runners/{docId}/history；後台修改也記錄，source='admin'）──
+const normNameA=s=>String(s||'').normalize('NFKC').replace(/\s+/g,'').toLowerCase();
+const HIST_FIELDS_A=['name','gender','birthday','idNumber','phone','email'];
+const HIST_LABEL={name:'姓名',gender:'性別',birthday:'生日',idNumber:'身分證',phone:'手機',email:'Email'};
+// 更新參加者主檔：順便寫 nameKey，有改到身分／聯絡欄位就留一筆修改前的紀錄
+async function adminUpdateRunner(docId, after, extra){
+  const ref=doc(db,'systems',SYS,'runners',docId);
+  const snap=await getDoc(ref);
+  const before=snap.exists()?snap.data():{};
+  const changes={};
+  HIST_FIELDS_A.forEach(f=>{ if(f in after&&(before[f]||'')!==(after[f]||'')) changes[f]={from:before[f]||'',to:after[f]||''}; });
+  const b=writeBatch(db);
+  b.update(ref,{...after,...(after.name!==undefined?{nameKey:normNameA(after.name)}:{}),updatedAt:serverTimestamp()});
+  if(Object.keys(changes).length) b.set(doc(collection(ref,'history')),{changes,source:'admin',eventId:(extra&&extra.eventId)||'',entryDocId:(extra&&extra.entryDocId)||'',by:auth.currentUser?.email||'',at:serverTimestamp()});
+  await b.commit();
+}
+const HIST_SRC={signup:'報名時認成同一人',edit:'參加者自己修改',batch:'填表人整批修改',admin:'管理員修改'};
+window.showRunnerHistory=async function(docId,title){
+  if(!docId){ showToast('找不到這位參加者','error'); return; }
+  let rows='';
+  try{
+    const snap=await getDocs(query(collection(db,'systems',SYS,'runners',docId,'history'),orderBy('at','desc')));
+    rows=snap.docs.map(d=>{
+      const h=d.data();
+      const t=h.at?.toDate?h.at.toDate().toLocaleString('zh-TW',{hour12:false}):'-';
+      const ch=Object.entries(h.changes||{}).map(([f,c])=>'<div><span style="color:var(--muted)">'+esc(HIST_LABEL[f]||f)+'</span>：'+esc(c.from||'（空）')+' → <strong>'+esc(c.to||'（空）')+'</strong></div>').join('');
+      return '<div style="border-bottom:1px solid var(--border);padding:8px 0;font-size:.85rem"><div style="font-size:.75rem;color:var(--muted);margin-bottom:2px">'+esc(t)+'　'+esc(HIST_SRC[h.source]||h.source||'')+(h.by?'（'+esc(h.by)+'）':'')+'</div>'+ch+'</div>';
+    }).join('');
+  }catch(e){ showToast('讀取失敗：'+e.message,'error'); return; }
+  const dlg=document.createElement('div');
+  dlg.className='modal-overlay'; dlg.style.display='flex';
+  dlg.innerHTML='<div class="modal" style="max-width:520px"><h3 style="margin-top:0">資料修改紀錄'+(title?'：'+esc(title):'')+'</h3>'
+    +(rows||'<div style="color:var(--muted);font-size:.85rem">沒有修改紀錄</div>')
+    +'<div class="modal-actions"><button class="btn btn-ghost">關閉</button></div></div>';
+  dlg.querySelector('button').onclick=()=>dlg.remove();
+  document.body.appendChild(dlg);
+};
+
 async function fetchRunnersByUniqueIds(uniqueIds) {
   const ids = [...new Set((uniqueIds||[]).filter(Boolean))];
   const map = {};
@@ -218,7 +256,7 @@ async function fetchRunnersByUniqueIds(uniqueIds) {
   const chunks = [];
   for (let i=0; i<ids.length; i+=30) chunks.push(ids.slice(i, i+30));
   const snaps = await Promise.all(chunks.map(c=>getDocs(query(collection(db,'systems',SYS,'runners'), where('uniqueId','in',c)))));
-  snaps.forEach(snap=>snap.docs.forEach(d=>{ const r=d.data(); if(r.uniqueId) map[r.uniqueId]=r; }));
+  snaps.forEach(snap=>snap.docs.forEach(d=>{ const r=d.data(); if(r.uniqueId) map[r.uniqueId]={...r,_docId:d.id}; }));
   return map;
 }
 
@@ -316,6 +354,8 @@ function setFieldError(id, hasError) {
   if (!el) return;
   el.style.borderColor = hasError ? 'var(--red)' : '';
 }
+// 參加者 modal 的 inline oninput 會用到
+Object.assign(window,{setFieldError,validateBirthday,validatePhone,validateEmail,validateId});
 
 // ── 參加者比對：回傳三種狀態而不是true/false──
 // 'same'（身分證號相同，直接確定同一人，不用問）｜
@@ -839,7 +879,7 @@ window.saveRunner = async function() {
   if (hasErr) { showToast('請修正格式錯誤','error'); return; }
   const name = document.getElementById('rName').value.trim();
   if (!name) { showToast('姓名為必填','error'); return; }
-  await updateDoc(doc(db,'systems',SYS,'runners',id), {name, gender:document.getElementById('rGender').value, birthday, phone, email, idNumber:idNum, note:document.getElementById('rNote').value.trim(), updatedAt:serverTimestamp()});
+  await adminUpdateRunner(id, {name, gender:document.getElementById('rGender').value, birthday, phone, email, idNumber:idNum, note:document.getElementById('rNote').value.trim()});
   showToast('已更新'); closeModal('runnerModal'); loadRunners();
 }
 window.deleteRunner = async function(id, name) {
@@ -2197,8 +2237,14 @@ function renderEntries(list){
     const cancelBadge=e.cancelRequested?' <span class="badge" style="background:rgba(239,68,68,.1);color:var(--red);border-color:rgba(239,68,68,.3)">⚠️ 申請取消中</span>':'';
     const rejectBtn=e.cancelRequested?'<button class="btn btn-sm btn-ghost" onclick="rejectCancelRequest(\''+e.id+'\')">駁回申請</button> ':'';
     const ma=e.matchAudit;
+    const VIA_TXT={'ask-ever':'回答「以前報名過」','ask-ever-no':'回答「沒報名過」，另建新參加者','ask-contact':'填了以前的手機／Email','ask-idNumber':'填了身分證','ask-idNumber-rest':'填了身分證（排除其他人）','ask-idNumber-none':'填了身分證，都不符，另建新參加者','ask-uid':'填了 ID'};
     const matchAuditBadge=ma
-      ?' <span style="cursor:help;font-size:.85rem" title="'+esc('曾偵測到疑似同一人（比對到 '+(ma.matchedUniqueId||'-')+'，相符欄位：'+((ma.matchedFields||[]).join('、')||'-')+'）\n處理結果：'+(ma.decision==='same'?'選了「同一人」，已沿用該參加者資料':'選了「非同一人」，各自建檔'))+'">'+(ma.decision==='same'?'🔗':'⚠️')+'</span>'
+      ?' <span style="cursor:help;font-size:.85rem" title="'+esc(ma.via
+          ?'報名時有同姓名、同性別、同生日的參加者，確認了身分：'+(VIA_TXT[ma.via]||ma.via)+(ma.decision==='same'?'\n認成同一人（'+(ma.matchedUniqueId||'-')+'）':'')
+          :'曾偵測到疑似同一人（比對到 '+(ma.matchedUniqueId||'-')+'，相符欄位：'+((ma.matchedFields||[]).join('、')||'-')+'）\n處理結果：'+(ma.decision==='same'?'選了「同一人」，已沿用該參加者資料':'選了「非同一人」，各自建檔'))+'">'+(ma.decision==='same'?'🔗':'⚠️')+'</span>'
+      :'';
+    const editedBadge=e.profileEdited
+      ?' <a href="#" class="badge" style="background:rgba(249,115,22,.1);color:var(--accent);border-color:rgba(249,115,22,.3);text-decoration:none" title="參加者改過姓名、性別、生日或身分證，點一下看修改紀錄" onclick="showRunnerHistory(\''+escJs(r._docId||'')+'\',\''+escJs(e.name||r.name||'')+'\');return false">資料曾修改</a>'
       :'';
     return '<tr>'
       +'<td><input type="checkbox" class="row-cb" data-id="'+e.id+'" onchange="onRowCbChange(\'entriesBatchDeleteBtn\',\'entriesTableBody\',\'entriesSelectAll\',\'entriesBatchRejectBtn\')"></td>'
@@ -2206,7 +2252,7 @@ function renderEntries(list){
       +'<td><span class="badge">'+esc(e.group||'-')+'</span></td>'
       +'<td><span class="mono">'+esc(e.uniqueId||'')+'</span></td>'
       +'<td>'+(e.batchCode?'<a href="#" class="mono" style="color:var(--accent)" onclick="showBatchInfo(\''+escJs(e.batchCode)+'\');return false">'+esc(e.batchCode)+'</a>':'-')+'</td>'
-      +'<td>'+esc(e.name||r.name||'-')+cancelBadge+matchAuditBadge+'</td>'
+      +'<td>'+esc(e.name||r.name||'-')+cancelBadge+matchAuditBadge+editedBadge+'</td>'
       +'<td>'+esc(r.gender||'-')+'</td>'
       +'<td>'+esc(r.birthday||'-')+'</td>'
       +'<td>'+esc(r.phone||'-')+'</td>'
@@ -3096,23 +3142,23 @@ window.saveEntry=async function(){
     if(match&&status==='same'){
       // 身分證號相同，確定同一人，不用問，直接沿用並同步最新資料
       uniqueId=match.uniqueId;
-      await updateDoc(doc(db,'systems',SYS,'runners',match.docId),{...runnerData,updatedAt:serverTimestamp()});
+      await adminUpdateRunner(match.docId,{...runnerData},{eventId});
     }else if(match&&status==='ambiguous'){
       const result=await showSimilarPersonDialog(match,runnerData);
       if(result==='refill')return;
       matchAudit={matchedUniqueId:match.uniqueId,decision:result,matchedFields:matchedFieldsOf(match,runnerData)};
       if(result==='same'){
         uniqueId=match.uniqueId;
-        await updateDoc(doc(db,'systems',SYS,'runners',match.docId),{...runnerData,updatedAt:serverTimestamp()});
+        await adminUpdateRunner(match.docId,{...runnerData},{eventId});
       }else{
         // 非同一人：建立新參加者（計數器配號，與線上報名共用、不會撞號）
         uniqueId=await allocateUniqueId();
-        await setDoc(doc(collection(db,'systems',SYS,'runners')),{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+        await setDoc(doc(collection(db,'systems',SYS,'runners')),{...runnerData,nameKey:normNameA(runnerData.name),uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       }
     }else{
       // 確定非同一人／無比對結果：建立新參加者（計數器配號，與線上報名共用、不會撞號）
       uniqueId=await allocateUniqueId();
-      await setDoc(doc(collection(db,'systems',SYS,'runners')),{...runnerData,uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+      await setDoc(doc(collection(db,'systems',SYS,'runners')),{...runnerData,nameKey:normNameA(runnerData.name),uniqueId,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
     }
   }
   // 已報名檢查（新增時才需要，編輯時跳過）——已報名過此活動就直接拒絕，不要靜默更新，
@@ -3160,7 +3206,7 @@ window.saveEntry=async function(){
   if(id || (document.getElementById('entryUniqueId').value)){
     const rSnap=await getDocs(query(collection(db,'systems',SYS,'runners'),where('uniqueId','==',uniqueId)));
     if(!rSnap.empty){
-      await updateDoc(doc(db,'systems',SYS,'runners',rSnap.docs[0].id),{name,gender,birthday,phone,email,idNumber:idNum,note,updatedAt:serverTimestamp()});
+      await adminUpdateRunner(rSnap.docs[0].id,{name,gender,birthday,phone,email,idNumber:idNum,note},{eventId,entryDocId:id||''});
     }
   }
   const data={uniqueId,name,bibNumber,bibNum:bibNumNew,group,groupId,customData,...parentalData,updatedAt:serverTimestamp()};
@@ -5900,7 +5946,7 @@ th[data-sort]:hover{color:var(--accent);}
     <div class="input-group"><label>E-Mail</label><input id="rEmail" type="email" class="input" oninput="setFieldError('rEmail',!validateEmail(this.value))"></div>
     <div class="input-group"><label>身分證字號（1英文+9數字）</label><input id="rIdNumber" type="text" class="input" oninput="applyHalf(this);setFieldError('rIdNumber',!validateId(this.value))"></div>
     <div class="input-group"><label>備註</label><input id="rNote" type="text" class="input"></div>
-    <div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal('runnerModal')">取消</button><button class="btn btn-primary" onclick="saveRunner()">儲存</button></div>
+    <div class="modal-actions"><button class="btn btn-ghost" style="margin-right:auto" onclick="showRunnerHistory(document.getElementById('runnerDocId').value,document.getElementById('rName').value)">修改紀錄</button><button class="btn btn-ghost" onclick="closeModal('runnerModal')">取消</button><button class="btn btn-primary" onclick="saveRunner()">儲存</button></div>
   </div>
 </div>
 
