@@ -1899,7 +1899,7 @@ window.openMemberEditor=async function(p){
   document.getElementById('mlHint').textContent=MEMBER_HINT[mode]||'';
   document.getElementById('mlSearch').value='';
   const temp=mode==='temp';
-  document.getElementById('mlPersonFields').style.display=temp?'none':'';
+  document.querySelectorAll('#memberListModal .ml-person').forEach(el=>{ el.style.display=temp?'none':''; });
   document.getElementById('mlNoteField').style.display=temp?'':'none';
   document.getElementById('mlNoLabel').textContent=temp?'號碼':'編號';
   mlClearForm(); mlRender();
@@ -1936,6 +1936,7 @@ function mlClearForm(){
   document.getElementById('mlGender').value='';
   document.getElementById('mlSaveRowBtn').textContent='＋ 新增';
   document.getElementById('mlCancelEditBtn').style.display='none';
+  document.getElementById('mlEditTitle').textContent='新增一筆';
 }
 window.mlCancelEdit=function(){ mlClearForm(); };
 window.mlEdit=function(no){
@@ -1945,6 +1946,8 @@ window.mlEdit=function(no){
   else{ const m=ML.members.find(x=>x.no===no)||{}; document.getElementById('mlName').value=m.name||''; document.getElementById('mlGender').value=m.gender||''; document.getElementById('mlBirthday').value=m.birthday||''; }
   document.getElementById('mlSaveRowBtn').textContent='更新這筆';
   document.getElementById('mlCancelEditBtn').style.display='';
+  document.getElementById('mlEditTitle').textContent='編輯 '+no;
+  const box=document.getElementById('mlEditBox'); if(box.scrollIntoView) box.scrollIntoView({block:'nearest',behavior:'smooth'});
   document.getElementById('mlNo').focus();
 };
 // 新增或更新一筆（檢查格式、編號不能重複）
@@ -7167,24 +7170,24 @@ th[data-sort]:hover{color:var(--accent);}
       <button type="button" class="btn btn-sm btn-ghost" onclick="mlDownload()">📤 下載名單</button>
       <input type="file" id="mlFile" accept=".csv,text/csv" style="display:none" onchange="mlOnCsv(this)">
     </div>
-    <div style="padding:12px;background:var(--surface2);border-radius:8px;margin-bottom:10px">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;align-items:end">
-        <div class="input-group" style="margin:0"><label id="mlNoLabel">編號</label><input id="mlNo" type="text" class="input" maxlength="40" oninput="applyHalf(this)"></div>
-        <div id="mlPersonFields" style="display:contents">
-          <div class="input-group" style="margin:0"><label>姓名</label><input id="mlName" type="text" class="input"></div>
-          <div class="input-group" style="margin:0"><label>性別</label><select id="mlGender" class="input"><option value="">請選擇...</option><option value="男">男</option><option value="女">女</option></select></div>
-          <div class="input-group" style="margin:0"><label>生日</label><input id="mlBirthday" type="text" class="input" placeholder="1980/01/01" oninput="applyHalf(this)"></div>
-        </div>
-        <div id="mlNoteField" class="input-group" style="margin:0;display:none"><label>備註（發給誰，只有管理員看得到）</label><input id="mlNote" type="text" class="input" maxlength="100"></div>
+    <div class="input-group" style="margin-bottom:6px"><input id="mlSearch" type="text" class="input" placeholder="搜尋編號、姓名、生日、備註" oninput="mlRender()"></div>
+    <div id="mlSummary" style="font-size:.78rem;color:var(--muted);margin-bottom:6px"></div>
+    <div class="table-wrap" id="mlTable" style="max-height:40vh;overflow:auto"></div>
+    <!-- 編輯區：在名單下面；按某一筆的「編輯」會把資料帶到這裡 -->
+    <div id="mlEditBox" style="padding:12px;background:var(--surface2);border-radius:8px;margin-top:12px">
+      <div id="mlEditTitle" style="font-size:.82rem;font-weight:700;margin-bottom:8px">新增一筆</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
+        <div class="input-group" style="margin:0;flex:1 1 120px"><label id="mlNoLabel">編號</label><input id="mlNo" type="text" class="input" maxlength="40" oninput="applyHalf(this)"></div>
+        <div class="input-group ml-person" style="margin:0;flex:1 1 140px"><label>姓名</label><input id="mlName" type="text" class="input"></div>
+        <div class="input-group ml-person" style="margin:0;flex:0 1 110px"><label>性別</label><select id="mlGender" class="input"><option value="">請選擇...</option><option value="男">男</option><option value="女">女</option></select></div>
+        <div class="input-group ml-person" style="margin:0;flex:1 1 130px"><label>生日</label><input id="mlBirthday" type="text" class="input" placeholder="1980/01/01" oninput="applyHalf(this)"></div>
+        <div class="input-group" id="mlNoteField" style="margin:0;flex:2 1 220px;display:none"><label>備註（發給誰，只有管理員看得到）</label><input id="mlNote" type="text" class="input" maxlength="100"></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button type="button" class="btn btn-sm btn-primary" id="mlSaveRowBtn" onclick="mlSaveRow()">＋ 新增</button>
         <button type="button" class="btn btn-sm btn-ghost" id="mlCancelEditBtn" style="display:none" onclick="mlCancelEdit()">取消編輯</button>
       </div>
     </div>
-    <div class="input-group" style="margin-bottom:6px"><input id="mlSearch" type="text" class="input" placeholder="搜尋編號、姓名、生日、備註" oninput="mlRender()"></div>
-    <div id="mlSummary" style="font-size:.78rem;color:var(--muted);margin-bottom:6px"></div>
-    <div class="table-wrap" id="mlTable" style="max-height:46vh;overflow:auto"></div>
     <div class="modal-actions"><button class="btn btn-ghost" onclick="mlClose()">關閉</button><button class="btn btn-primary" id="mlSaveBtn" onclick="mlSave()">儲存名單</button></div>
   </div>
 </div>
