@@ -1263,10 +1263,10 @@ function readEventSeriesFields(){
 // ── 建立下一期 ──
 // 從同系列的某一期（預設最新一期）複製設定，建立新的一期。不複製報名資料與日期，報名開關預設關閉。
 const NEXT_COPY_ITEMS=[
-  {key:'groups',  label:'組別（含限制、名額、邀請碼、組別號碼規則）'},
+  {key:'groups',  label:'組別（含限制、名額、邀請碼、會員編號與名單、組別號碼規則）'},
   {key:'runnerForm', label:'參加者表單（自訂欄位、標準欄位設定）'},
   {key:'staffForm', label:'工作人員表單（自訂欄位、標準欄位設定）'},
-  {key:'capacity', label:'名額與號碼規則（報名上限、人數顯示、編號位數與範圍、自選與改號）'},
+  {key:'capacity', label:'名額、報名限制與號碼規則（報名上限、人數顯示、活動的報名限制與會員名單、編號位數與範圍、自選與改號）'},
   {key:'banner', label:'宣傳圖片與連結（參加者、工作人員）'},
   {key:'award', label:'獎狀版面與底圖（不含頒發名單，也不會開放下載）'},
 ];
@@ -1317,7 +1317,7 @@ window.createNextPeriod=async function(){
       createdAt:serverTimestamp(), updatedAt:serverTimestamp(), copiedFrom:srcId||'' };
     if(items.has('capacity')) Object.assign(data, pick(['registrationCapacity','multiSignup','checkin','queryRequireBib','showCapacity','entryCountDisplay','entryCountThreshold',
       'bibMode','bibOldCanChange','bibPadLength','bibPrefix','bibSuffix','bibNote','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax',
-      'genderLimit','ageMin','ageMax','parentalAge','inviteCodeHash']));
+      'genderLimit','ageMin','ageMax','parentalAge','inviteCodeHash','memberMode','memberLabel']));
     if(items.has('banner')) Object.assign(data, pick(['bannerUrl','bannerLinkText','bannerLinkUrl','staffBannerUrl','staffBannerLinkText','staffBannerLinkUrl']));
     if(items.has('staffForm')) Object.assign(data, pick(['staffCustomFields','staffFieldSettings','staffMultiSignup']));
     if(items.has('runnerForm')) Object.assign(data, pick(['fieldSettings']));
@@ -1335,6 +1335,14 @@ window.createNextPeriod=async function(){
       });
       batch.update(newRef,{groupNames:gList.map(g=>g.name)});
       await batch.commit();
+    }
+    // 會員名單：活動的（複製報名限制時）和組別的（複製組別時，換成新組別 ID）一起複製
+    if(srcId){
+      const lists=await getDocs(collection(db,'systems',SYS,'events',srcId,'memberLists'));
+      for(const d of lists.docs){
+        const to=d.id==='event'?(items.has('capacity')?'event':''):(idMap[d.id]||'');
+        if(to){ const {updatedAt,...rest}=d.data(); await setDoc(doc(db,'systems',SYS,'events',newRef.id,'memberLists',to),{...rest,updatedAt:serverTimestamp(),copiedFrom:srcId}); }
+      }
     }
     if(items.has('runnerForm')&&Array.isArray(src.customFields)){
       // 沒有一起複製組別的話，舊的「適用組別」對不上新組別，改成適用全部組別
@@ -1479,6 +1487,7 @@ function dtFieldsToTs(prefix) {
 const EVENT_SUBCOLLECTIONS=[
   {key:'runners',label:'報名記錄'},{key:'staff',label:'工作人員報名'},{key:'groups',label:'組別'},
   {key:'checkins',label:'報到記錄'},{key:'bibs',label:'號碼標記'},{key:'settings',label:'獎狀設定'},{key:'batches',label:'多人報名批次'},{key:'staffBatches',label:'工作人員多人報名批次'},{key:'bibRegistry',label:'號碼登記表'},
+  {key:'memberLists',label:'會員名單'},{key:'memberNos',label:'會員編號使用紀錄'},
 ];
 window.deleteEvent=async function(){
   const id=document.getElementById('eventDocId').value; if(!id)return;
@@ -1577,13 +1586,14 @@ function setEvLimitForm(ev){
   document.getElementById('evParentalAge').value=ev.parentalAge||'';
   const inv=document.getElementById('evInviteCode'); inv.value='';
   inv.placeholder=groupHasInvite(ev)?'已設定（輸入新碼可更換；輸入「清除」可移除）':'例：MEMBER2026';
+  setMemberForm('ev',ev);
 }
 function readEvLimitForm(){
   const n=id=>{ const v=document.getElementById(id).value.trim(); return v===''?0:parseInt(v,10); };
   const ageMin=n('evAgeMin'), ageMax=n('evAgeMax'), parentalAge=n('evParentalAge');
   if([ageMin,ageMax,parentalAge].some(v=>isNaN(v)||v<0)) return {error:'年齡、家長陪同請填 0 以上的整數'};
   if(ageMin>0&&ageMax>0&&ageMin>ageMax) return {error:'年齡下限不能大於上限'};
-  return {data:{genderLimit:document.getElementById('evGenderLimit').value, ageMin, ageMax, parentalAge}, invite:document.getElementById('evInviteCode').value.trim()};
+  return {data:{genderLimit:document.getElementById('evGenderLimit').value, ageMin, ageMax, parentalAge, ...readMemberForm('ev')}, invite:document.getElementById('evInviteCode').value.trim()};
 }
 // 活動表單：報到設定（舊活動沒設定過＝需要報到、編號與 QR Code 都勾）
 function setEvCheckinForm(ev){
@@ -1736,7 +1746,7 @@ async function loadGroups() {
     const own=groupLimitOverride(g);
     const limits=[g.groupCapacity>0?'限'+g.groupCapacity+'人':''].concat(own
       ?[g.genderLimit?'限'+g.genderLimit+'性':'', g.ageMin>0?g.ageMin+'歲以上':'', g.ageMax>0?g.ageMax+'歲以下':'',
-        g.parentalAge>0?g.parentalAge+'歲以下須家長陪同':'', groupHasInvite(g)?'需邀請碼':''].filter(Boolean).concat(['（自訂報名限制）'])
+        g.parentalAge>0?g.parentalAge+'歲以下須家長陪同':'', groupHasInvite(g)?'需邀請碼':'', memberModeText(g)].filter(Boolean).concat(['（自訂報名限制）'])
       :['報名限制跟活動一致']).filter(Boolean);
     const upBtn='<button class="btn btn-sm btn-ghost" style="padding:2px 8px"'+(i===0?' disabled':'')+' onclick="moveGroup(\''+g.id+'\',-1)" title="上移">↑</button>';
     const downBtn='<button class="btn btn-sm btn-ghost" style="padding:2px 8px"'+(i===list.length-1?' disabled':'')+' onclick="moveGroup(\''+g.id+'\',1)" title="下移">↓</button>';
@@ -1757,6 +1767,332 @@ function groupLimitOverride(g){
   return LIMIT_KEYS.some(k=>g[k])||groupHasInvite(g);
 }
 function limitSource(ev,g){ return groupLimitOverride(g)?{o:g,who:'此組別'}:{o:ev||{},who:'此活動'}; }
+// ── 會員編號（報名限制的一種；規則跟後端 memberRule、checkMember 一致）──
+// 名單存在 events/{活動}/memberLists/{'event' 或組別ID}；使用中的編號在 events/{活動}/memberNos（報名資料不存編號）
+const MEMBER_MODES_A=['member','exclude','temp'];
+function normMemberNoA(v){ return String(v==null?'':v).normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase().slice(0,40); }
+function memberRuleA(ev,g,groupId){
+  const {o,who}=limitSource(ev||{},g);
+  const mode=MEMBER_MODES_A.includes(o.memberMode)?o.memberMode:'';
+  const listId=(groupLimitOverride(g)&&groupId)?groupId:'event';
+  const label=String(o.memberLabel||'').trim().slice(0,20)||(mode==='temp'?'臨時編號':'會員編號');
+  return {mode,listId,label,who};
+}
+function memberModeText(o){
+  const m=MEMBER_MODES_A.includes(o.memberMode)?o.memberMode:''; if(!m) return '';
+  const lbl=String(o.memberLabel||'').trim();
+  return m==='member'?'限會員（填'+(lbl||'會員編號')+'）':m==='exclude'?'排除會員名單':'限'+(lbl||'臨時編號')+'清單';
+}
+const MEMBER_HINT={
+  member:'名單四欄：編號、姓名、性別、生日。報名時要填編號，而且姓名、性別、生日要跟名單相符；同一場活動一個編號只能報名一次。',
+  exclude:'上傳跟會員組同樣格式的名單（編號、姓名、性別、生日）。報名者的姓名、性別、生日跟名單上任何一位相同就不能報名；不用填編號。',
+  temp:'清單只要號碼（可以加一欄「備註」記下發給誰，只有管理員看得到）。報名時填清單上的號碼就能報名，不比對其他資料；同一場活動每個號碼只能用一次。'};
+function memberListTarget(p){
+  if(p==='ev'){ const id=document.getElementById('eventDocId').value; return id?{eventId:id,listId:'event'}:null; }
+  const id=document.getElementById('groupDocId').value; return id?{eventId:curGEvId,listId:id}:null;
+}
+window.onMemberModeChange=function(p){
+  const mode=document.getElementById(p+'MemberMode').value;
+  document.getElementById(p+'MemberRow').style.display=mode?'':'none';
+  document.getElementById(p+'MemberLabelRow').style.display=mode==='exclude'?'none':'';
+  document.getElementById(p+'MemberLabel').placeholder=mode==='temp'?'臨時編號':'會員編號';
+  document.getElementById(p+'MemberHint').textContent=MEMBER_HINT[mode]||'';
+  if(mode) showMemberListStatus(p);
+};
+function setMemberForm(p,o){
+  document.getElementById(p+'MemberMode').value=MEMBER_MODES_A.includes(o.memberMode)?o.memberMode:'';
+  document.getElementById(p+'MemberLabel').value=o.memberLabel||'';
+  onMemberModeChange(p);
+}
+function readMemberForm(p){
+  const memberMode=document.getElementById(p+'MemberMode').value;
+  return {memberMode, memberLabel:(memberMode==='member'||memberMode==='temp')?document.getElementById(p+'MemberLabel').value.trim().slice(0,20):''};
+}
+async function showMemberListStatus(p){
+  const el=document.getElementById(p+'MemberStatus'); const t=memberListTarget(p);
+  el.style.color='var(--muted)';
+  if(!t){ el.textContent=p==='ev'?'活動存檔後才能上傳名單':'組別存檔後才能上傳名單'; return; }
+  el.textContent='讀取中...';
+  try{
+    const s=await getDoc(doc(db,'systems',SYS,'events',t.eventId,'memberLists',t.listId)); const d=s.exists()?s.data():{};
+    const temp=document.getElementById(p+'MemberMode').value==='temp';
+    const n=temp?(d.temps||[]).length:(d.members||[]).length;
+    el.textContent=n?('目前名單 '+n+(temp?' 個號碼':' 人')+(d.updatedAt?.toDate?'（'+d.updatedAt.toDate().toLocaleString('zh-TW',{hour12:false})+' 上傳）':'')):'還沒上傳名單（沒有名單時，需要填編號的人都報不了名）';
+    if(!n) el.style.color='var(--red)';
+  }catch(e){ el.textContent='讀取失敗：'+e.message; }
+}
+
+// 生日：1980/1/1、1980-01-01、1980.1.1、19800101 都整理成 1980/01/01；性別：男／女／M／F
+function normBdayCsv(v){ v=String(v||'').trim(); const m=v.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/)||v.match(/^(\d{4})(\d{2})(\d{2})$/); return m?m[1]+'/'+m[2].padStart(2,'0')+'/'+m[3].padStart(2,'0'):''; }
+function normGenderCsv(v){ v=String(v||'').trim().toLowerCase(); return ['男','男性','m','male'].includes(v)?'男':['女','女性','f','female'].includes(v)?'女':''; }
+// 解析名單 CSV：第一列是標題就依標題找欄位，否則照順序（編號、姓名、性別、生日；臨時編號只看第一欄）
+function parseMemberCsv(text,mode){
+  const rows=text.replace(/^﻿/,'').split('\n').map(l=>l.replace(/\r$/,'')).filter(l=>l.trim()!=='').map(parseCSVLine);
+  if(!rows.length) return {errors:['檔案是空的']};
+  const h=rows[0].map(x=>x.replace(/\s/g,''));
+  const isHead=h.some(x=>/姓名|性別|生日|編號|號碼/.test(x));
+  let col={no:0,name:1,gender:2,birthday:3};
+  if(isHead){ const f=re=>h.findIndex(x=>re.test(x)); col={no:f(/編號|號碼|代號/),name:f(/姓名|名字/),gender:f(/性別/),birthday:f(/生日|出生/),note:f(/備註|說明|發給/)}; if(mode==='temp'&&col.no<0) col.no=0; }
+  else col.note=1;
+  const body=isHead?rows.slice(1):rows, errors=[], seen=new Map();
+  const lineNo=i=>i+(isHead?2:1);
+  if(mode==='temp'){
+    const temps=[], tempNotes={};
+    body.forEach((r,i)=>{ const no=normMemberNoA(r[col.no]);
+      if(!no){ errors.push('第 '+lineNo(i)+' 列：號碼空白'); return; }
+      if(seen.has(no)){ errors.push('第 '+lineNo(i)+' 列：號碼 '+no+' 跟第 '+seen.get(no)+' 列重複'); return; }
+      seen.set(no,lineNo(i)); temps.push(no);
+      const note=col.note>=0?String(r[col.note]||'').trim().slice(0,100):''; if(note) tempNotes[no]=note; });
+    return {temps,tempNotes,errors};
+  }
+  if(isHead&&[col.no,col.name,col.gender,col.birthday].some(x=>x<0)) return {errors:['找不到欄位：標題列要有編號、姓名、性別、生日']};
+  const members=[];
+  body.forEach((r,i)=>{
+    const no=normMemberNoA(r[col.no]), name=cleanNameA(r[col.name]||''), gender=normGenderCsv(r[col.gender]), birthday=normBdayCsv(r[col.birthday]);
+    const bad=[]; if(!no) bad.push('編號空白'); if(!name) bad.push('姓名空白'); if(!gender) bad.push('性別要填男或女'); if(!birthday||!validateBirthday(birthday)) bad.push('生日格式不對');
+    if(bad.length){ errors.push('第 '+lineNo(i)+' 列：'+bad.join('、')); return; }
+    if(seen.has(no)){ errors.push('第 '+lineNo(i)+' 列：編號 '+no+' 跟第 '+seen.get(no)+' 列重複'); return; }
+    seen.set(no,lineNo(i)); members.push({no,name,gender,birthday});
+  });
+  return {members,errors};
+}
+
+
+// ── 名單編輯視窗：搜尋、逐筆新增／修改／刪除、使用狀況、上傳（加入或取代）、下載 ──
+// 編輯的是暫存的一份，按「儲存名單」才寫入資料庫
+let ML=null; // {p, eventId, listId, mode, members, temps, tempNotes, used:{編號:{name,bib}}, editNo, dirty}
+// 合併名單：replace＝取代整份；否則加入（同一個編號就更新那一筆）
+function mergeMemberList(cur,inc,mode,replace){
+  if(mode==='temp'){
+    const temps=replace?[]:[...cur.temps], notes=replace?{}:{...cur.tempNotes};
+    const has=new Set(temps);
+    inc.temps.forEach(no=>{ if(!has.has(no)){ temps.push(no); has.add(no); } });
+    Object.assign(notes,inc.tempNotes||{});
+    return {members:cur.members,temps,tempNotes:notes};
+  }
+  const map=new Map(replace?[]:cur.members.map(m=>[m.no,m]));
+  inc.members.forEach(m=>map.set(m.no,m));
+  return {members:[...map.values()],temps:cur.temps,tempNotes:cur.tempNotes};
+}
+window.openMemberEditor=async function(p){
+  const t=memberListTarget(p), mode=document.getElementById(p+'MemberMode').value;
+  if(!t){ showToast(p==='ev'?'請先儲存活動':'請先儲存組別','error'); return; }
+  if(!mode){ showToast('請先選擇會員編號的模式','error'); return; }
+  const label=(mode==='exclude'?'':document.getElementById(p+'MemberLabel').value.trim())||(mode==='temp'?'臨時編號':'會員編號');
+  const [ls,ns,es]=await Promise.all([
+    getDoc(doc(db,'systems',SYS,'events',t.eventId,'memberLists',t.listId)),
+    getDocs(collection(db,'systems',SYS,'events',t.eventId,'memberNos')),
+    getDocs(collection(db,'systems',SYS,'events',t.eventId,'runners'))]);
+  const d=ls.exists()?ls.data():{};
+  const entries={}; es.docs.forEach(x=>{ entries[x.id]=x.data(); });
+  const used={};
+  if(mode!=='exclude'){
+    ns.docs.forEach(x=>{ const m=x.data(); if(!x.id.startsWith(t.listId+'__')) return; const e=entries[m.entryId]; if(e) used[m.memberNo]={name:e.name||'',bib:e.bibNumber||''}; });
+  }else{
+    // 排除會員：標出「名單上的人卻已經報名」（例如名單是報名後才上傳的）
+    const rs=await getDocs(collection(db,'systems',SYS,'runners'));
+    const byUid={}; rs.docs.forEach(x=>{ byUid[x.get('uniqueId')]=x.data(); });
+    ML_excludeHits=(m)=>Object.values(entries).find(e=>{ if(t.listId!=='event'&&e.groupId!==t.listId) return false; const r=byUid[e.uniqueId]||{}; return normNameA(r.name||e.name)===normNameA(m.name)&&r.gender===m.gender&&r.birthday===m.birthday; });
+  }
+  ML={p,eventId:t.eventId,listId:t.listId,mode,label,members:[...(d.members||[])],temps:[...(d.temps||[])],tempNotes:{...(d.tempNotes||{})},used,editNo:null,dirty:false};
+  document.getElementById('mlTitle').textContent=(mode==='temp'?label+'清單':mode==='exclude'?'排除名單':label+'名單')+'（'+(p==='ev'?'活動':'組別')+'）';
+  document.getElementById('mlHint').textContent=MEMBER_HINT[mode]||'';
+  document.getElementById('mlSearch').value='';
+  const temp=mode==='temp';
+  document.getElementById('mlPersonFields').style.display=temp?'none':'';
+  document.getElementById('mlNoteField').style.display=temp?'':'none';
+  document.getElementById('mlNoLabel').textContent=temp?'號碼':'編號';
+  mlClearForm(); mlRender();
+  document.getElementById('memberListModal').style.display='flex';
+};
+let ML_excludeHits=null;
+function mlCount(){ return ML.mode==='temp'?ML.temps.length:ML.members.length; }
+window.mlRender=function(){
+  if(!ML) return;
+  const q=normSearch(document.getElementById('mlSearch').value);
+  const temp=ML.mode==='temp';
+  const rows=temp?ML.temps.map(no=>({no,note:ML.tempNotes[no]||''})):ML.members;
+  const hit=r=>!q||normSearch([r.no,r.name,r.birthday,r.note].filter(Boolean).join(' ')).includes(q);
+  const list=rows.filter(hit);
+  const usedOf=r=>{
+    if(ML.mode==='exclude'){ const e=ML_excludeHits&&ML_excludeHits(r); return e?'<span style="color:var(--red)">⚠️ 已報名（'+esc(e.name||'')+(e.bibNumber?'，編號 '+esc(e.bibNumber):'')+'）</span>':'<span style="color:var(--muted)">-</span>'; }
+    const u=ML.used[r.no]; return u?'<span style="color:var(--green)">已報名（'+esc(u.name)+(u.bib?'，編號 '+esc(u.bib):'')+'）</span>':'<span style="color:var(--muted)">未使用</span>';
+  };
+  const usedN=ML.mode==='exclude'?0:rows.filter(r=>ML.used[r.no]).length;
+  document.getElementById('mlSummary').textContent='共 '+rows.length+(temp?' 個號碼':' 人')+(ML.mode==='exclude'?'':'，已報名 '+usedN+'、未使用 '+(rows.length-usedN))+(q?'；符合搜尋 '+list.length:'')+(ML.dirty?'　（有修改還沒儲存）':'');
+  const head=temp?'<th>號碼</th><th>備註</th>':'<th>編號</th><th>姓名</th><th>性別</th><th>生日</th>';
+  const LIMIT=200;
+  document.getElementById('mlTable').innerHTML='<table style="min-width:0;width:100%"><thead><tr>'+head+'<th>使用狀況</th><th>操作</th></tr></thead><tbody>'
+    +(list.length?list.slice(0,LIMIT).map(r=>'<tr>'+(temp?'<td class="mono">'+esc(r.no)+'</td><td>'+esc(r.note||'')+'</td>'
+      :'<td class="mono">'+esc(r.no)+'</td><td>'+esc(r.name)+'</td><td>'+esc(r.gender)+'</td><td>'+esc(r.birthday)+'</td>')
+      +'<td style="font-size:.78rem">'+usedOf(r)+'</td>'
+      +'<td style="white-space:nowrap"><button class="btn btn-sm btn-ghost" onclick="mlEdit(\''+escJs(r.no)+'\')">編輯</button> <button class="btn btn-sm btn-danger" onclick="mlDelete(\''+escJs(r.no)+'\')">刪除</button></td></tr>').join('')
+      :'<tr><td colspan="'+(temp?4:6)+'" class="loading-cell">'+(rows.length?'沒有符合的資料':'名單是空的')+'</td></tr>')
+    +'</tbody></table>'+(list.length>LIMIT?'<div class="csv-hint">只顯示前 '+LIMIT+' 筆，請用搜尋找其他資料</div>':'');
+};
+function mlClearForm(){
+  ML.editNo=null;
+  ['mlNo','mlName','mlBirthday','mlNote'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('mlGender').value='';
+  document.getElementById('mlSaveRowBtn').textContent='＋ 新增';
+  document.getElementById('mlCancelEditBtn').style.display='none';
+}
+window.mlCancelEdit=function(){ mlClearForm(); };
+window.mlEdit=function(no){
+  ML.editNo=no;
+  document.getElementById('mlNo').value=no;
+  if(ML.mode==='temp') document.getElementById('mlNote').value=ML.tempNotes[no]||'';
+  else{ const m=ML.members.find(x=>x.no===no)||{}; document.getElementById('mlName').value=m.name||''; document.getElementById('mlGender').value=m.gender||''; document.getElementById('mlBirthday').value=m.birthday||''; }
+  document.getElementById('mlSaveRowBtn').textContent='更新這筆';
+  document.getElementById('mlCancelEditBtn').style.display='';
+  document.getElementById('mlNo').focus();
+};
+// 新增或更新一筆（檢查格式、編號不能重複）
+window.mlSaveRow=function(){
+  const no=normMemberNoA(document.getElementById('mlNo').value);
+  if(!no){ showToast('請填'+(ML.mode==='temp'?'號碼':'編號'),'error'); return; }
+  const old=ML.editNo;
+  const exists=ML.mode==='temp'?ML.temps.includes(no):ML.members.some(m=>m.no===no);
+  if(exists&&no!==old){ showToast((ML.mode==='temp'?'號碼 ':'編號 ')+no+' 已經在名單裡','error'); return; }
+  if(old&&no!==old&&ML.used[old]&&!confirm('編號 '+old+' 已經有人報名（'+ML.used[old].name+'）。改成 '+no+' 之後，那筆報名不會被取消，但他修改報名時就比對不到名單了。確定要改？')) return;
+  if(ML.mode==='temp'){
+    const note=document.getElementById('mlNote').value.trim().slice(0,100);
+    if(old){ ML.temps[ML.temps.indexOf(old)]=no; delete ML.tempNotes[old]; } else ML.temps.push(no);
+    if(note) ML.tempNotes[no]=note; else delete ML.tempNotes[no];
+  }else{
+    const name=cleanNameA(document.getElementById('mlName').value), gender=document.getElementById('mlGender').value, birthday=normBdayCsv(document.getElementById('mlBirthday').value);
+    if(!name){ showToast('請填姓名','error'); return; }
+    if(!gender){ showToast('請選性別','error'); return; }
+    if(!birthday||!validateBirthday(birthday)){ showToast('生日格式不對（例：1980/01/01）','error'); return; }
+    const row={no,name,gender,birthday};
+    if(old) ML.members[ML.members.findIndex(m=>m.no===old)]=row; else ML.members.push(row);
+  }
+  ML.dirty=true; showToast(old?'已更新（記得按「儲存名單」）':'已新增（記得按「儲存名單」）');
+  mlClearForm(); mlRender();
+};
+window.mlDelete=function(no){
+  const u=ML.used[no];
+  if(!confirm(u?'編號 '+no+' 已經有人報名（'+u.name+'）。刪除後那筆報名不會被取消，但他修改報名時就比對不到名單了。確定刪除？':'確定刪除 '+no+'？')) return;
+  if(ML.mode==='temp'){ ML.temps=ML.temps.filter(x=>x!==no); delete ML.tempNotes[no]; }
+  else ML.members=ML.members.filter(m=>m.no!==no);
+  if(ML.editNo===no) mlClearForm();
+  ML.dirty=true; mlRender();
+};
+window.mlPickCsv=function(replace){
+  const el=document.getElementById('mlFile'); el.dataset.replace=replace?'1':''; el.click();
+};
+window.mlOnCsv=async function(input){
+  const file=input.files[0]; const replace=input.dataset.replace==='1'; input.value=''; if(!file||!ML) return;
+  const r=parseMemberCsv(await file.text(),ML.mode);
+  if(r.errors.length){ alert('檔案有問題，沒有匯入：\n'+r.errors.slice(0,15).join('\n')+(r.errors.length>15?'\n…還有 '+(r.errors.length-15)+' 個問題':'')); return; }
+  const inc=ML.mode==='temp'?r.temps:r.members;
+  if(!inc.length){ showToast('檔案沒有資料','error'); return; }
+  const cur={members:ML.members,temps:ML.temps,tempNotes:ML.tempNotes};
+  const exist=new Set(ML.mode==='temp'?ML.temps:ML.members.map(m=>m.no));
+  const upd=inc.filter(x=>exist.has(ML.mode==='temp'?x:x.no)).length;
+  const msg=replace?'用檔案的 '+inc.length+' 筆取代目前名單（'+mlCount()+' 筆）？'
+    :'加入檔案的 '+inc.length+' 筆：新增 '+(inc.length-upd)+' 筆、更新 '+upd+' 筆（同一個編號用檔案的資料）？';
+  if(!confirm(msg+'\n確認後還要按「儲存名單」才會寫入。')) return;
+  const m=mergeMemberList(cur,ML.mode==='temp'?{temps:r.temps,tempNotes:r.tempNotes}:{members:r.members},ML.mode,replace);
+  ML.members=m.members; ML.temps=m.temps; ML.tempNotes=m.tempNotes; ML.dirty=true;
+  mlClearForm(); mlRender();
+};
+window.mlDownload=function(){
+  if(!ML) return;
+  if(!mlCount()){ showToast('名單是空的','error'); return; }
+  const csv=ML.mode==='temp'?'號碼,備註\n'+ML.temps.map(no=>[no,ML.tempNotes[no]||''].map(csvCell).join(',')).join('\n')
+    :'編號,姓名,性別,生日\n'+ML.members.map(m=>[m.no,m.name,m.gender,m.birthday].map(csvCell).join(',')).join('\n');
+  downloadCSV(csv,(ML.mode==='temp'?ML.label+'清單':ML.label+'名單')+'_'+fmtFileDateTime()+'.csv');
+};
+window.mlSave=async function(){
+  if(!ML) return;
+  const temp=ML.mode==='temp';
+  const data=temp?{temps:ML.temps,tempNotes:ML.tempNotes}:{members:ML.members};
+  if(JSON.stringify(data).length>900000){ showToast('名單太大（一份名單大約一萬筆以內），請分組設定','error'); return; }
+  const btn=document.getElementById('mlSaveBtn'); btn.disabled=true;
+  try{
+    await setDoc(doc(db,'systems',SYS,'events',ML.eventId,'memberLists',ML.listId),{...data,updatedAt:serverTimestamp()},{merge:true});
+    ML.dirty=false; showToast('名單已儲存（'+mlCount()+(temp?' 個號碼）':' 人）')); mlRender(); showMemberListStatus(ML.p);
+  }catch(e){ showToast('儲存失敗：'+e.message,'error'); }
+  finally{ btn.disabled=false; }
+};
+window.mlClose=function(){
+  if(ML&&ML.dirty&&!confirm('名單有修改還沒儲存，確定關閉？')) return;
+  document.getElementById('memberListModal').style.display='none'; ML=null;
+};
+// 修改報名換組別：新組別要邀請碼、而且跟原本的不是同一組邀請碼 → 要填（跟後端 checkInviteOnMove 一致）
+function inviteSigA(o){ return groupHasInvite(o)?((o.inviteCodeHash||'').trim()||('plain:'+String(o.inviteCode||'').trim())):''; }
+function adminInviteNeeded(groupId){
+  const ev=curEntryEv||{}; const newSrc=limitSource(ev,curEntryGroupMap[groupId]).o;
+  if(!groupHasInvite(newSrc)) return false;
+  if(!document.getElementById('entryDocId').value) return true; // 新增報名
+  const oldGid=document.getElementById('eGroup').dataset.oldGroup||'';
+  if(oldGid===(groupId||'')) return false;
+  return inviteSigA(limitSource(ev,curEntryGroupMap[oldGid]).o)!==inviteSigA(newSrc);
+}
+// 新增／編輯報名的會員編號欄位：依目前組別的報名限制顯示
+function updateEntryMemberRow(){
+  const gid=document.getElementById('eGroup').value;
+  const r=memberRuleA(curEntryEv||{},curEntryGroupMap[gid],gid);
+  document.getElementById('eMemberRow').style.display=r.mode?'':'none';
+  document.getElementById('eMemberLabel').textContent=r.label;
+  document.getElementById('eMemberInputWrap').style.display=(r.mode==='member'||r.mode==='temp')?'':'none';
+  document.getElementById('eMemberHint').textContent=r.mode==='exclude'?r.who+'不開放會員名單內的人員報名（存檔時比對姓名、性別、生日）'
+    :r.mode==='member'?'要跟名單上的姓名、性別、生日相符':r.mode==='temp'?'填清單上的號碼，同一場活動每個號碼只能用一次':'';
+}
+// 存檔前檢查會員編號（跟線上一致）。回傳 {error} ｜ {keep:true}（沒改，沿用）｜ {key,no,label,override}
+async function adminMemberCheck(eventId,id,groupId,prof){
+  const r=memberRuleA(curEntryEv||{},curEntryGroupMap[groupId],groupId);
+  const override=document.getElementById('eMemberOverride').checked;
+  const no=(r.mode==='member'||r.mode==='temp')?normMemberNoA(document.getElementById('eMemberNo').value):'';
+  const tip='（要例外請勾「管理員例外」）';
+  if(id){
+    // 修改：換組別、姓名／性別／生日或編號有改才重新比對（跟線上修改一致）
+    const old=allEntries.find(e=>e.id===id)||{}; const rd=old.runnerData||{};
+    const changed=(old.groupId||'')!==(groupId||'')||normNameA(rd.name||old.name||'')!==normNameA(prof.name)||(rd.gender||'')!==prof.gender||(rd.birthday||'')!==prof.birthday||(old.memberNo||'')!==no;
+    if(!changed&&!override) return {keep:true};
+  }
+  const none={key:'',no:'',label:r.label,override};
+  if(!r.mode) return none;
+  let list=null;
+  const loadList=async()=>{ const s=await getDoc(doc(db,'systems',SYS,'events',eventId,'memberLists',r.listId)); return s.exists()?s.data():null; };
+  const same=m=>normNameA(m.name)===normNameA(prof.name)&&m.gender===prof.gender&&m.birthday===prof.birthday;
+  if(r.mode==='exclude'){
+    if(!override){ list=await loadList(); if(list&&(list.members||[]).some(same)) return {error:r.who+'不開放名單內的人員報名'+tip}; }
+    return none;
+  }
+  if(!no) return override?none:{error:'請填寫'+r.label+tip};
+  if(!override){
+    list=await loadList();
+    if(!list) return {error:r.label+'名單尚未上傳'+tip};
+    if(r.mode==='member'){ const m=(list.members||[]).find(x=>normMemberNoA(x.no)===no); if(!m||!same(m)) return {error:r.label+'和姓名、性別、生日對不上名單'+tip}; }
+    else if(!(list.temps||[]).some(x=>normMemberNoA(x)===no)) return {error:r.label+'不在清單上'+tip};
+  }
+  const key=r.listId+'__'+no;
+  const ms=await getDoc(doc(db,'systems',SYS,'events',eventId,'memberNos',key));
+  if(ms.exists()&&ms.data().entryId!==id){
+    const other=await getDoc(doc(db,'systems',SYS,'events',eventId,'runners',ms.data().entryId));
+    if(other.exists()) return {error:r.label+' '+no+' 已經有人報名這場活動（不能重複）'};
+  }
+  return {key,no,label:r.label,override};
+}
+// 存檔後寫入這筆報名的編號（清掉原本的）
+async function adminWriteMember(eventId,entryId,mres,uniqueId){
+  if(!mres||mres.keep) return;
+  const col=collection(db,'systems',SYS,'events',eventId,'memberNos');
+  const mine=await getDocs(query(col,where('entryId','==',entryId)));
+  const b=writeBatch(db);
+  mine.docs.forEach(d=>{ if(d.id!==mres.key) b.delete(d.ref); });
+  if(mres.key) b.set(doc(col,mres.key),{entryId,memberNo:mres.no,label:mres.label,uniqueId:uniqueId||'',updatedAt:serverTimestamp(),...(mres.override?{byAdmin:true}:{})});
+  await b.commit();
+}
+// 刪除報名時一併刪掉編號（失敗也沒關係：指向已刪除報名的編號會被當作沒人用）
+async function deleteMemberMarkers(eventId,ids){
+  try{
+    const col=collection(db,'systems',SYS,'events',eventId,'memberNos');
+    for(const id of ids){ const s=await getDocs(query(col,where('entryId','==',id))); for(const d of s.docs) await deleteDoc(d.ref); }
+  }catch(e){ console.warn('刪除會員編號標記失敗',e); }
+}
 window.onGLimitOverrideChange=function(){
   document.getElementById('gLimitOverrideFields').style.display=document.getElementById('gLimitOverride').checked?'':'none';
 };
@@ -1779,6 +2115,7 @@ window.showAddGroup=function(){
   document.getElementById('gInviteCode').placeholder='例：VIP2026';
   document.getElementById('gLimitOverride').checked=false;
   onGLimitOverrideChange();
+  setMemberForm('g',{});
   document.getElementById('gBibOverride').checked=false;
   document.getElementById('gAllowCustomBib').value='0';
   document.getElementById('gAllowBibChange').value='0';
@@ -1809,6 +2146,7 @@ window.editGroup=async function(id){
   const gInv=document.getElementById('gInviteCode');
   gInv.value='';
   gInv.placeholder=groupHasInvite(g)?'已設定（輸入新碼可更換；輸入「清除」可移除）':'例：VIP2026';
+  setMemberForm('g',g);
   // 號碼規則：沒開啟過就全部顯示空白/預設值，開啟過就回填組別自己的設定
   document.getElementById('gBibOverride').checked=!!g.bibOverride;
   document.getElementById('gAllowCustomBib').value=g.allowCustomBib?'1':'0';
@@ -1874,7 +2212,7 @@ window.saveGroup=async function(){
     if(gCustomBibRangeMax>gBibPadMax){showToast('自選號碼最大值（'+gCustomBibRangeMax+'）超出活動「參加者編號位數」可表示的範圍（'+gBibPadLength+'位最大到 '+gBibPadMax+'）','error'); return;}
     if(gCustomBibRangeMin>gBibPadMax){showToast('自選號碼最小值（'+gCustomBibRangeMin+'）超出活動「參加者編號位數」可表示的範圍（'+gBibPadLength+'位最大到 '+gBibPadMax+'）','error'); return;}
   }
-  const data={name,note,distance,distanceUnit,genderLimit,groupCapacity,ageMin,ageMax,parentalAge,limitOverride,
+  const data={name,note,distance,distanceUnit,genderLimit,groupCapacity,ageMin,ageMax,parentalAge,limitOverride,...readMemberForm('g'),
     bibOverride,allowCustomBib,allowBibChange,bibRangeMin:gBibRangeMin,bibRangeMax:gBibRangeMax,
     customBibRangeMin:gCustomBibRangeMin,customBibRangeMax:gCustomBibRangeMax,
     bibPrefix:gBibPrefix,bibSuffix:gBibSuffix,bibNote:gBibNote,
@@ -2334,6 +2672,7 @@ async function loadEntriesSection() {
   await loadEventSelect('entryEventSelect', async eventId=>{ if(eventId) loadEntries(); });
 }
 let curEntryCustomFields=[];
+let curMemberColLabel=''; // 報名列表的會員編號欄名稱（活動或組別有設定「限會員」「臨時編號」才顯示）
 let lastLoadedEntryEventId=null; // 用來判斷「同一場活動重新載入」還是「換了活動」
 window.loadEntries=async function(){
   const eventId=document.getElementById('entryEventSelect').value;
@@ -2357,10 +2696,17 @@ window.loadEntries=async function(){
   const bibEl=document.getElementById('eBib');
   if(bibEl) bibEl.placeholder=getEffBibConfigForGroup(null).fmt(1);
   refreshSearchFieldOptions('entrySearchField',cfDataFields(curEntryCustomFields));
+  // 會員編號：在管理員專用的 memberNos，用報名資料 ID 對應；欄名用活動／組別設定的名稱
+  const [mgSnap,mnSnap]=await Promise.all([getDocs(collection(db,'systems',SYS,'events',eventId,'groups')),getDocs(collection(db,'systems',SYS,'events',eventId,'memberNos'))]);
+  const memberMap={}; mnSnap.docs.forEach(d=>{ const m=d.data(); if(m.entryId) memberMap[m.entryId]=m.memberNo||''; });
+  const mLabels=new Set();
+  [{id:'',g:null},...mgSnap.docs.map(d=>({id:d.id,g:d.data()}))].forEach(x=>{ const r=memberRuleA(curEntryEv,x.g,x.id); if(r.mode==='member'||r.mode==='temp') mLabels.add(r.label); });
+  curMemberColLabel=mLabels.size?[...mLabels].join('／'):(Object.keys(memberMap).length?'會員編號':'');
   // 更新表頭
   const thead=document.getElementById('entriesTableHead');
   const baseHeads=['編號','組別','ID','批次','姓名','性別','生日','手機','Email','身分證','備註','家長聲明','聯絡人','聯絡人手機'];
   const baseSortKeys=['bibNumber','group','uniqueId','batchCode','name','runnerData.gender','runnerData.birthday','','','runnerData.idNumber','runnerData.note','','',''];
+  if(curMemberColLabel){ baseHeads.splice(2,0,curMemberColLabel); baseSortKeys.splice(2,0,'memberNo'); }
   thead.innerHTML='<th style="width:36px"><input type="checkbox" id="entriesSelectAll" onchange="toggleSelectAll(\'entriesTableBody\',\'entriesSelectAll\',\'entriesBatchDeleteBtn\',\'entriesBatchRejectBtn\')"></th>'
     +baseHeads.map((h,i)=>baseSortKeys[i]
       ?'<th data-sort="'+baseSortKeys[i]+'" onclick="sortTable(\'entriesTableBody\',\''+baseSortKeys[i]+'\')">'+h+'<span class="sort-icon"> ⇅</span></th>'
@@ -2378,7 +2724,7 @@ window.loadEntries=async function(){
   ]);
   const checkinMap={};
   checkinSnap.docs.forEach(d=>{checkinMap[d.id]=d.data();});
-  allEntries=snap.docs.map(d=>({id:d.id,...d.data(),runnerData:rMap[d.data().uniqueId]||{},checkin:checkinMap[d.data().uniqueId]||null}));
+  allEntries=snap.docs.map(d=>({id:d.id,...d.data(),memberNo:memberMap[d.id]||'',runnerData:rMap[d.data().uniqueId]||{},checkin:checkinMap[d.data().uniqueId]||null}));
   // 靜默補寫：舊報名記錄若缺 name 欄位（反正規化姓名），從主檔補進去。
   // runners 主檔僅限管理員讀取，公開端要顯示姓名只能靠報名記錄裡的
   // name——管理員開過一次這頁，舊資料就補齊了。
@@ -2401,7 +2747,7 @@ window.loadEntries=async function(){
 }
 function renderEntries(list){
   const tbody=document.getElementById('entriesTableBody');
-  const totalCols=18+cfDataFields(curEntryCustomFields).length;
+  const totalCols=18+(curMemberColLabel?1:0)+cfDataFields(curEntryCustomFields).length;
   if(!list.length){tbody.innerHTML='<tr><td colspan="'+totalCols+'" class="loading-cell">尚無報名資料</td></tr>';return;}
   const eventId=document.getElementById('entryEventSelect').value;
   tbody.innerHTML=list.map(e=>{
@@ -2433,6 +2779,7 @@ function renderEntries(list){
       +'<td><input type="checkbox" class="row-cb" data-id="'+e.id+'" onchange="onRowCbChange(\'entriesBatchDeleteBtn\',\'entriesTableBody\',\'entriesSelectAll\',\'entriesBatchRejectBtn\')"></td>'
       +'<td><strong>'+esc(e.bibNumber||'-')+'</strong></td>'
       +'<td><span class="badge">'+esc(e.group||'-')+'</span></td>'
+      +(curMemberColLabel?'<td><span class="mono">'+esc(e.memberNo||'-')+'</span></td>':'')
       +'<td><span class="mono">'+esc(e.uniqueId||'')+'</span></td>'
       +'<td>'+(e.batchCode?'<a href="#" class="mono" style="color:var(--accent)" onclick="showBatchInfo(\''+escJs(e.batchCode)+'\');return false">'+esc(e.batchCode)+'</a>':'-')+'</td>'
       +'<td>'+esc(e.name||r.name||'-')+cancelBadge+matchAuditBadge+editedBadge+'</td>'
@@ -2830,10 +3177,10 @@ window.exportEntries=async function(){
   const evDate=evDoc.data()?.date||'';
   const customFields=cfDataFields(evDoc.data()?.customFields||[]);
   const sorted=getSorted('entriesTableBody',allEntries);
-  let csv='編號,組別,ID,批次代碼,姓名,性別,生日,手機號碼,E-Mail,身分證字號,備註,家長陪同聲明,緊急聯絡人,緊急聯絡人手機'+customFields.map(f=>','+csvCell(f.label)).join('')+',報名時間,報到,報到時間\n';
+  let csv='編號,組別,'+(curMemberColLabel?csvCell(curMemberColLabel)+',':'')+'ID,批次代碼,姓名,性別,生日,手機號碼,E-Mail,身分證字號,備註,家長陪同聲明,緊急聯絡人,緊急聯絡人手機'+customFields.map(f=>','+csvCell(f.label)).join('')+',報名時間,報到,報到時間\n';
   sorted.forEach(e=>{
     const r=e.runnerData||{}; const cd=e.customData||{}; const ci=e.checkin;
-    csv+=[e.bibNumber,e.group,e.uniqueId,e.batchCode||'',e.name||r.name,r.gender,r.birthday,r.phone,
+    csv+=[e.bibNumber,e.group,...(curMemberColLabel?[e.memberNo||'']:[]),e.uniqueId,e.batchCode||'',e.name||r.name,r.gender,r.birthday,r.phone,
       r.email,r.idNumber,r.note,
       e.parentalConsentAgreed?'已同意':'',e.parentName,e.parentPhone].map(csvCell).join(',');
     customFields.forEach(f=>{
@@ -2963,6 +3310,8 @@ window.showAddEntry=async function(){
   document.getElementById('eNote').value='';
   document.getElementById('eInviteCode').value='';
   document.getElementById('eInviteCodeRow').style.display='none';
+  document.getElementById('eMemberNo').value=''; document.getElementById('eMemberOverride').checked=false;
+  document.getElementById('eGroup').dataset.oldGroup='';
   document.getElementById('eParentalBlock').style.display='none';
   document.getElementById('eParentalConsent').checked=false;
   document.getElementById('eParentName').value='';
@@ -3042,8 +3391,8 @@ async function validateGroupLimits(groupId, gender, birthday, inviteInput){
     }
   }
   const isNew=!document.getElementById('entryDocId').value;
-  // 邀請碼（雜湊比對；相容舊版明文）：新增報名才檢查，用組別自訂的或活動的（跟線上報名一致）
-  if(isNew&&groupHasInvite(o)){
+  // 邀請碼（雜湊比對；相容舊版明文）：新增報名，或修改時換到需要另一組邀請碼的組別才檢查（跟線上一致）
+  if(adminInviteNeeded(groupId)){
     if(!(await checkInviteCode(o,inviteInput)))
       return '邀請碼不正確';
   }
@@ -3075,9 +3424,11 @@ window.onEntryGroupChange=function(){
   if(noteEl)noteEl.textContent=g?.note||'';
   document.getElementById('eInviteCode').value='';
   updateEntryCustomFieldsVisibility();
-  if(!g){inviteRow.style.display=!document.getElementById('entryDocId').value&&groupHasInvite(curEntryEv||{})?'':'none';hint.textContent='';updateAdminParentalBlock();return;}
+  updateEntryMemberRow();
+  // 邀請碼：新增報名，或修改時換到需要另一組邀請碼的組別才要填
+  inviteRow.style.display=adminInviteNeeded(group)?'':'none';
+  if(!g){hint.textContent='';updateAdminParentalBlock();return;}
   const own=groupLimitOverride(g);
-  inviteRow.style.display=!document.getElementById('entryDocId').value&&groupHasInvite(limitSource(curEntryEv||{},g).o)?'':'none';
   // 限制摘要：自訂報名限制的組別列出自己的限制；組別名額一律列出
   const hints=[];
   if(own&&g.genderLimit) hints.push('限'+g.genderLimit+'性');
@@ -3085,6 +3436,7 @@ window.onEntryGroupChange=function(){
   if(own&&g.ageMax>0) hints.push(g.ageMax+'歲以下');
   if(g.groupCapacity>0) hints.push('限'+g.groupCapacity+'人');
   if(own&&g.parentalAge>0) hints.push(g.parentalAge+'歲以下須家長陪同聲明');
+  if(own&&memberModeText(g)) hints.push(memberModeText(g));
   if(!own) hints.push('報名限制跟活動一致');
   // 第一行組別資訊（有設定距離才顯示），第二行限制摘要；跟參加者報名表單一致
   const info=[groupDistText(g.distance,g.distanceUnit)].filter(Boolean);
@@ -3227,6 +3579,9 @@ window.editEntry=async function(id){
   document.getElementById('eBibOverride').checked=false;
   document.getElementById('eBib').dataset.exhaustChecked='';
   document.getElementById('eBib').disabled=false;
+  document.getElementById('eGroup').dataset.oldGroup=e.groupId||'';
+  document.getElementById('eMemberNo').value=(allEntries.find(x=>x.id===id)||{}).memberNo||'';
+  document.getElementById('eMemberOverride').checked=false;
   await loadEntryGroupOptions(e.groupId||'');
   document.getElementById('eName').value=e.name||r.name||'';
   document.getElementById('eGender').value=r.gender||'';
@@ -3323,6 +3678,10 @@ window.saveEntry=async function(){
     document.getElementById('eGroupHint').style.color='var(--red)';
     showToast(groupErr,'error');return;
   }
+  // 會員編號（跟線上一致；勾「管理員例外」就不比對名單，但填了編號仍不能跟別人重複）
+  const mres=await adminMemberCheck(eventId,id,groupId,{name,gender,birthday});
+  if(mres.error){setFieldError('eMemberNo',true);showToast(mres.error,'error');return;}
+  setFieldError('eMemberNo',false);
   // 家長陪同驗證：送出前依「目前的組別＋生日」即時重算，不依賴殘留旗標
   updateAdminParentalBlock();
   let parentalData={};
@@ -3430,6 +3789,7 @@ window.saveEntry=async function(){
   if(id){
     const oldBib=document.getElementById('eBib').dataset.oldBib||'';
     await updateDoc(doc(db,'systems',SYS,'events',eventId,'runners',id),data);
+    await adminWriteMember(eventId,id,mres,uniqueId);
     showToast('已更新');
     // 號碼有變動的話，要同步「號碼佔用標記」——刪掉舊的、建立新的，
     // 參加者端的原子防撞號機制（t.create）才能正確涵蓋這個號碼，不然標記不存在等於沒鎖住
@@ -3440,7 +3800,8 @@ window.saveEntry=async function(){
     }
   }else{
     data.createdAt=serverTimestamp();
-    await addDoc(collection(db,'systems',SYS,'events',eventId,'runners'),data);
+    const newRef=await addDoc(collection(db,'systems',SYS,'events',eventId,'runners'),data);
+    await adminWriteMember(eventId,newRef.id,mres,uniqueId);
     showToast('已新增');
     setBibMarker(null,eventId,bibNumNew,uniqueId);
   }
@@ -3635,6 +3996,7 @@ window.deleteEntry=async function(id,name){
   const entryObj=allEntries.find(x=>x.docId===id||x.id===id);
   await deleteDoc(doc(db,'systems',SYS,'events',eventId,'runners',id));
   if(entryObj) deleteBibMarker(null,eventId,entryObj.bibNumber,adminEntryNum(entryObj));
+  await deleteMemberMarkers(eventId,[id]);
   availBibSetAdmin=null; // 刪除後空出一個號碼，「查看可用號碼」快取要清掉，不然要重整頁面才會反映
   showToast('已刪除'); loadEntries();
 }
@@ -4552,6 +4914,7 @@ window.batchDeleteEntries=async function(){
     if(opCount>=400){await batch.commit();batch=writeBatch(db);opCount=0;}
   }
   if(opCount>0) await batch.commit();
+  await deleteMemberMarkers(eventId,ids);
   showToast('已刪除 '+ids.length+' 筆報名資料');
   availBibSetAdmin=null; // 批次刪除會空出多個號碼，「查看可用號碼」快取要清掉，不然要重整頁面才會反映
   resetBatchUI('entriesTableBody','entriesSelectAll','entriesBatchDeleteBtn','entriesBatchRejectBtn');
@@ -6218,6 +6581,21 @@ th[data-sort]:hover{color:var(--accent);}
           <div class="input-group" style="margin:0"><label>年齡下限（歲，0＝不限）</label><input id="evAgeMin" type="number" min="0" class="input" placeholder="0"></div>
           <div class="input-group" style="margin:0"><label>年齡上限（歲，0＝不限）</label><input id="evAgeMax" type="number" min="0" class="input" placeholder="0"></div>
           <div class="input-group" style="margin:0;grid-column:1/-1"><label>邀請碼（空白＝不需要）</label><input id="evInviteCode" type="text" class="input" placeholder="例：MEMBER2026"></div>
+          <div class="input-group" style="margin:0;grid-column:1/-1"><label>會員編號</label>
+            <select id="evMemberMode" class="input" onchange="onMemberModeChange('ev')">
+              <option value="">不檢查</option>
+              <option value="member">限會員：填編號，跟名單上的姓名、性別、生日都要相符</option>
+              <option value="exclude">排除會員：名單內的人不能報名（公開組用，不用填編號）</option>
+              <option value="temp">臨時編號：填清單上的號碼，每個號碼只能用一次</option>
+            </select></div>
+          <div id="evMemberRow" style="display:none;grid-column:1/-1">
+            <div class="input-group" id="evMemberLabelRow" style="margin:0 0 8px"><label>欄位名稱（報名表單、報名列表都用這個名稱）</label><input id="evMemberLabel" type="text" class="input" maxlength="20" placeholder="會員編號"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button type="button" class="btn btn-sm btn-ghost" onclick="openMemberEditor('ev')">📝 編輯名單</button>
+              <span id="evMemberStatus" style="font-size:.75rem;color:var(--muted)"></span>
+            </div>
+            <div id="evMemberHint" style="font-size:.72rem;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+          </div>
         </div>
         <div style="font-size:.72rem;color:var(--muted);margin-top:8px">每一位參加者都要符合，年齡以活動日期計算。有分組時，組別沒勾「此組別自訂報名限制」就用這裡的限制；勾了就只用組別自己的限制，這裡的不再套用。組別名額另外計算。</div>
       </div>
@@ -6366,8 +6744,23 @@ th[data-sort]:hover{color:var(--accent);}
             <div class="input-group" style="margin:0"><label>年齡下限（歲，0＝不限）</label><input id="gAgeMin" type="number" min="0" class="input" placeholder="0"></div>
             <div class="input-group" style="margin:0"><label>年齡上限（歲，0＝不限）</label><input id="gAgeMax" type="number" min="0" class="input" placeholder="0"></div>
             <div class="input-group" style="margin:0;grid-column:1/-1"><label>邀請碼（空白＝不需要）</label><input id="gInviteCode" type="text" class="input" placeholder="例：VIP2026"></div>
+            <div class="input-group" style="margin:0;grid-column:1/-1"><label>會員編號</label>
+              <select id="gMemberMode" class="input" onchange="onMemberModeChange('g')">
+                <option value="">不檢查</option>
+                <option value="member">限會員：填編號，跟名單上的姓名、性別、生日都要相符</option>
+                <option value="exclude">排除會員：名單內的人不能報名（公開組用，不用填編號）</option>
+                <option value="temp">臨時編號：填清單上的號碼，每個號碼只能用一次</option>
+              </select></div>
+            <div id="gMemberRow" style="display:none;grid-column:1/-1">
+              <div class="input-group" id="gMemberLabelRow" style="margin:0 0 8px"><label>欄位名稱（報名表單、報名列表都用這個名稱）</label><input id="gMemberLabel" type="text" class="input" maxlength="20" placeholder="會員編號"></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <button type="button" class="btn btn-sm btn-ghost" onclick="openMemberEditor('g')">📝 編輯名單</button>
+                <span id="gMemberStatus" style="font-size:.75rem;color:var(--muted)"></span>
+              </div>
+              <div id="gMemberHint" style="font-size:.72rem;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+            </div>
           </div>
-          <div style="font-size:.72rem;color:var(--muted);margin-top:8px">勾選後這個組別只用這裡的限制，活動的性別、年齡、家長陪同、邀請碼都不再套用（可以比活動寬鬆，也可以比較嚴格）。年齡以活動日期計算。</div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:8px">勾選後這個組別只用這裡的限制，活動的性別、年齡、家長陪同、邀請碼、會員編號都不再套用（可以比活動寬鬆，也可以比較嚴格）。年齡以活動日期計算。</div>
         </div>
       </div>
       <!-- 組別號碼規則 -->
@@ -6545,6 +6938,11 @@ th[data-sort]:hover{color:var(--accent);}
     <div class="input-group" id="eIdNumberRow"><label id="eIdNumberLabel">身分證字號（1英文+9數字）</label><input id="eIdNumber" type="text" class="input" placeholder="A123456789" onblur="validateEntryField('idNumber')" oninput="applyHalf(this)"></div>
     <div class="input-group"><label>備註</label><input id="eNote" type="text" class="input"></div>
     <div class="input-group" id="eInviteCodeRow" style="display:none"><label>邀請碼 <span class="required-star">*</span></label><input id="eInviteCode" type="text" class="input" placeholder="輸入邀請碼"></div>
+    <div class="input-group" id="eMemberRow" style="display:none">
+      <div id="eMemberInputWrap"><label><span id="eMemberLabel">會員編號</span> <span class="required-star">*</span></label><input id="eMemberNo" type="text" class="input" maxlength="40" oninput="applyHalf(this)"></div>
+      <div id="eMemberHint" style="font-size:.72rem;color:var(--muted);margin-top:4px"></div>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;margin-top:6px"><input type="checkbox" id="eMemberOverride"> 管理員例外：不比對名單（填了編號仍不能跟別人重複）</label>
+    </div>
     <div id="eParentalBlock" style="display:none">
       <div style="padding:12px;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.3);border-radius:8px;margin-bottom:14px">
         <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:.85rem;line-height:1.5">
@@ -6759,6 +7157,37 @@ th[data-sort]:hover{color:var(--accent);}
 </div>
 
 <!-- 建立下一期 Modal -->
+<div id="memberListModal" class="modal-overlay">
+  <div class="modal" style="max-width:860px;width:860px">
+    <div class="modal-title" id="mlTitle">名單</div>
+    <div id="mlHint" class="csv-hint"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+      <button type="button" class="btn btn-sm btn-ghost" onclick="mlPickCsv(false)">📥 上傳 CSV（加入）</button>
+      <button type="button" class="btn btn-sm btn-ghost" onclick="mlPickCsv(true)">📥 上傳 CSV（取代整份）</button>
+      <button type="button" class="btn btn-sm btn-ghost" onclick="mlDownload()">📤 下載名單</button>
+      <input type="file" id="mlFile" accept=".csv,text/csv" style="display:none" onchange="mlOnCsv(this)">
+    </div>
+    <div style="padding:12px;background:var(--surface2);border-radius:8px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;align-items:end">
+        <div class="input-group" style="margin:0"><label id="mlNoLabel">編號</label><input id="mlNo" type="text" class="input" maxlength="40" oninput="applyHalf(this)"></div>
+        <div id="mlPersonFields" style="display:contents">
+          <div class="input-group" style="margin:0"><label>姓名</label><input id="mlName" type="text" class="input"></div>
+          <div class="input-group" style="margin:0"><label>性別</label><select id="mlGender" class="input"><option value="">請選擇...</option><option value="男">男</option><option value="女">女</option></select></div>
+          <div class="input-group" style="margin:0"><label>生日</label><input id="mlBirthday" type="text" class="input" placeholder="1980/01/01" oninput="applyHalf(this)"></div>
+        </div>
+        <div id="mlNoteField" class="input-group" style="margin:0;display:none"><label>備註（發給誰，只有管理員看得到）</label><input id="mlNote" type="text" class="input" maxlength="100"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button type="button" class="btn btn-sm btn-primary" id="mlSaveRowBtn" onclick="mlSaveRow()">＋ 新增</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="mlCancelEditBtn" style="display:none" onclick="mlCancelEdit()">取消編輯</button>
+      </div>
+    </div>
+    <div class="input-group" style="margin-bottom:6px"><input id="mlSearch" type="text" class="input" placeholder="搜尋編號、姓名、生日、備註" oninput="mlRender()"></div>
+    <div id="mlSummary" style="font-size:.78rem;color:var(--muted);margin-bottom:6px"></div>
+    <div class="table-wrap" id="mlTable" style="max-height:46vh;overflow:auto"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" onclick="mlClose()">關閉</button><button class="btn btn-primary" id="mlSaveBtn" onclick="mlSave()">儲存名單</button></div>
+  </div>
+</div>
 <div id="nextPeriodModal" class="modal-overlay">
   <div class="modal" style="max-width:560px">
     <div class="modal-title" id="npTitle">建立下一期</div>
