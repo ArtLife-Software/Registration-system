@@ -1840,6 +1840,7 @@ function parseMemberCsv(text,mode){
     const temps=[], tempNotes={};
     body.forEach((r,i)=>{ const no=normMemberNoA(r[col.no]);
       if(!no){ errors.push('第 '+lineNo(i)+' 列：號碼空白'); return; }
+      if(no.startsWith('範例')){ errors.push('第 '+lineNo(i)+' 列是範本的範例，請刪除這一列'); return; }
       if(seen.has(no)){ errors.push('第 '+lineNo(i)+' 列：號碼 '+no+' 跟第 '+seen.get(no)+' 列重複'); return; }
       seen.set(no,lineNo(i)); temps.push(no);
       const note=col.note>=0?String(r[col.note]||'').trim().slice(0,100):''; if(note) tempNotes[no]=note; });
@@ -1849,6 +1850,7 @@ function parseMemberCsv(text,mode){
   const members=[];
   body.forEach((r,i)=>{
     const no=normMemberNoA(r[col.no]), name=cleanNameA(r[col.name]||''), gender=normGenderCsv(r[col.gender]), birthday=normBdayCsv(r[col.birthday]);
+    if(no.startsWith('範例')){ errors.push('第 '+lineNo(i)+' 列是範本的範例，請刪除這一列'); return; }
     const bad=[]; if(!no) bad.push('編號空白'); if(!name) bad.push('姓名空白'); if(!gender) bad.push('性別要填男或女'); if(!birthday||!validateBirthday(birthday)) bad.push('生日格式不對');
     if(bad.length){ errors.push('第 '+lineNo(i)+' 列：'+bad.join('、')); return; }
     if(seen.has(no)){ errors.push('第 '+lineNo(i)+' 列：編號 '+no+' 跟第 '+seen.get(no)+' 列重複'); return; }
@@ -2000,9 +2002,17 @@ window.mlOnCsv=async function(input){
   ML.members=m.members; ML.temps=m.temps; ML.tempNotes=m.tempNotes; ML.dirty=true;
   mlClearForm(); mlRender();
 };
+// 範本：標題列＋一列範例（編號以「範例」開頭，上傳時會被擋下，提醒要刪掉）
+window.mlTemplate=function(){
+  if(!ML) return;
+  const csv=ML.mode==='temp'?'號碼,備註\n範例T01,發給王小明（範例，請刪除這一列）'
+    :'編號,姓名,性別,生日\n範例001,王小明,男,1980/01/01';
+  downloadCSV(csv,(ML.mode==='temp'?ML.label+'清單':ML.label+'名單')+'_範本.csv');
+  showToast('已下載範本：照標題列填寫，範例那一列要刪掉');
+};
 window.mlDownload=function(){
   if(!ML) return;
-  if(!mlCount()){ showToast('名單是空的','error'); return; }
+  if(!mlCount()){ if(confirm('名單是空的，要下載範本嗎？')) mlTemplate(); return; }
   const csv=ML.mode==='temp'?'號碼,備註\n'+ML.temps.map(no=>[no,ML.tempNotes[no]||''].map(csvCell).join(',')).join('\n')
     :'編號,姓名,性別,生日\n'+ML.members.map(m=>[m.no,m.name,m.gender,m.birthday].map(csvCell).join(',')).join('\n');
   downloadCSV(csv,(ML.mode==='temp'?ML.label+'清單':ML.label+'名單')+'_'+fmtFileDateTime()+'.csv');
@@ -7168,6 +7178,7 @@ th[data-sort]:hover{color:var(--accent);}
       <button type="button" class="btn btn-sm btn-ghost" onclick="mlPickCsv(false)">📥 上傳 CSV（加入）</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="mlPickCsv(true)">📥 上傳 CSV（取代整份）</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="mlDownload()">📤 下載名單</button>
+      <button type="button" class="btn btn-sm btn-ghost" onclick="mlTemplate()">📄 下載範本</button>
       <input type="file" id="mlFile" accept=".csv,text/csv" style="display:none" onchange="mlOnCsv(this)">
     </div>
     <div class="input-group" style="margin-bottom:6px"><input id="mlSearch" type="text" class="input" placeholder="搜尋編號、姓名、生日、備註" oninput="mlRender()"></div>
