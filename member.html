@@ -532,7 +532,9 @@ async function selectSignupEvent(eventId, keepWrapper){
   }
   // 活動層級的報名限制（每一位參加者都要符合）
   const evLim=limitHintList(curSignupEvent);
-  if(evLim.length) formHtml+='<div class="card" style="padding:10px 14px;font-size:.85rem"><strong>報名限制：</strong>'+esc(evLim.join('、'))+'</div>';
+  const anyGroupOwn=Object.values(window._signupGroupMap||{}).some(groupLimitOverride);
+  if(evLim.length) formHtml+='<div class="card" style="padding:10px 14px;font-size:.85rem"><strong>報名限制：</strong>'+esc(evLim.join('、'))
+    +(anyGroupOwn?'<div style="font-size:.78rem;color:var(--muted);margin-top:2px">有些組別有自己的報名限制，以組別說明為準。</div>':'')+'</div>';
   // 開放多人報名的活動：先選「個人報名」或「多人報名」
   const multiOn=curSignupEvent.multiSignup?.enabled===true;
   if(multiOn){
@@ -973,12 +975,7 @@ window.onSignupGroupChange=function(){
   if(!g){ if(hint)hint.textContent=''; return; }
   if(!hint)return;
   // 限制摘要
-  const hints=[];
-  if(g.genderLimit)hints.push('限'+g.genderLimit+'性');
-  if(g.ageMin>0)hints.push(g.ageMin+'歲以上');
-  if(g.ageMax>0)hints.push(g.ageMax+'歲以下');
-  if(g.groupCapacity>0)hints.push('限'+g.groupCapacity+'人');
-  if(g.parentalAge>0)hints.push(g.parentalAge+'歲以下須家長陪同聲明');
+  const hints=groupLimitHints(g);
   hint.textContent=groupHintText(g,hints);
   hint.style.whiteSpace='pre-line';
 }
@@ -1050,20 +1047,36 @@ function setBibAffix(inputId,cfg){
   if(pre) pre.textContent=cfg.prefix||''; if(suf) suf.textContent=cfg.suffix||'';
 }
 // ── 報名限制：活動層級＋組別都要符合（跟後端 checkRegLimits 一致）──
-function effParentalAge(ev,g){ return Math.max((ev||{}).parentalAge||0,(g||{}).parentalAge||0); }
-function inviteTarget(ev,g){ return groupHasInvite(g)?g:(groupHasInvite(ev)?ev:null); }
+// ── 報名限制（性別、年齡、家長陪同、邀請碼）：活動或組別「二選一」，不合併 ──
+// 組別勾了「此組別自訂報名限制」（limitOverride:true）→ 只用組別的限制；沒勾 → 只用活動的限制。
+// 舊資料沒有 limitOverride：組別有設任何限制就當作自訂（維持組別限制有效），都沒設就沿用活動。
+// 組別名額（groupCapacity）、活動總名額不在這裡，兩個都一直有效。
+const LIMIT_KEYS=['genderLimit','ageMin','ageMax','parentalAge'];
+function groupLimitOverride(g){
+  if(!g) return false;
+  if(typeof g.limitOverride==='boolean') return g.limitOverride;
+  return LIMIT_KEYS.some(k=>g[k])||groupHasInvite(g);
+}
+function limitSource(ev,g){ return groupLimitOverride(g)?{o:g,who:'此組別'}:{o:ev||{},who:'此活動'}; }
+function effParentalAge(ev,g){ return limitSource(ev,g).o.parentalAge||0; }
+function inviteTarget(ev,g){ const o=limitSource(ev,g).o; return groupHasInvite(o)?o:null; }
 function regLimitError(ev,g,gender,birthday,evDate){
-  for(const [who,o] of [['此活動',ev||{}],['此組別',g||{}]]){
-    if(o.genderLimit&&gender&&o.genderLimit!==gender) return who+'限'+o.genderLimit+'性報名';
-    if(birthday&&evDate){
-      const age=calcAgeRunner(birthday,evDate);
-      if(age!==null){
-        if(o.ageMin>0&&age<o.ageMin) return who+'年齡限制 '+o.ageMin+' 歲以上（您的年齡：'+age+'歲）';
-        if(o.ageMax>0&&age>o.ageMax) return who+'年齡限制 '+o.ageMax+' 歲以下（您的年齡：'+age+'歲）';
-      }
+  const {o,who}=limitSource(ev,g);
+  if(o.genderLimit&&gender&&o.genderLimit!==gender) return who+'限'+o.genderLimit+'性報名';
+  if(birthday&&evDate){
+    const age=calcAgeRunner(birthday,evDate);
+    if(age!==null){
+      if(o.ageMin>0&&age<o.ageMin) return who+'年齡限制 '+o.ageMin+' 歲以上（您的年齡：'+age+'歲）';
+      if(o.ageMax>0&&age>o.ageMax) return who+'年齡限制 '+o.ageMax+' 歲以下（您的年齡：'+age+'歲）';
     }
   }
   return '';
+}
+// 組別說明裡的「此組別限制」：自訂報名限制的組別列出它自己的限制；組別名額一律列出
+function groupLimitHints(g){
+  const h=groupLimitOverride(g)?limitHintList(g).filter(x=>x!=='需要邀請碼'):[];
+  if(g&&g.groupCapacity>0) h.push('限'+g.groupCapacity+'人');
+  return h;
 }
 function limitHintList(o){
   const h=[]; o=o||{};
@@ -1825,8 +1838,7 @@ window.mfRefresh=function(ns){
     const g=st.groupMap[document.getElementById(P+'group')?.value||''];
     const gh=document.getElementById(P+'ghint');
     if(gh){
-      const hints=[];
-      if(g){ if(g.genderLimit)hints.push('限'+g.genderLimit+'性'); if(g.ageMin>0)hints.push(g.ageMin+'歲以上'); if(g.ageMax>0)hints.push(g.ageMax+'歲以下'); if(g.groupCapacity>0)hints.push('限'+g.groupCapacity+'人'); if(g.parentalAge>0)hints.push(g.parentalAge+'歲以下須家長陪同聲明'); }
+      const hints=g?groupLimitHints(g):[];
       gh.textContent=g?[g.note||'',groupHintText(g,hints)].filter(Boolean).join('\n'):'';
     }
     const inv=document.getElementById(P+'inviteRow'); if(inv) inv.style.display=inviteTarget(st.ev,g)?'':'none';
@@ -2518,32 +2530,15 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   // 精簡版 groupMap 供 inline onchange 使用（key 是組別ID）：parentalAge 判斷家長陪同，
   // 其餘欄位供組別註解／限制摘要顯示（跟參加者新增表單的 onSignupGroupChange 一致）
   const gMapJson=JSON.stringify(Object.fromEntries(groupList.map(g=>[g.id,{
-    parentalAge:g.parentalAge||0, genderLimit:g.genderLimit||'', ageMin:g.ageMin||0, ageMax:g.ageMax||0,
+    parentalAge:g.parentalAge||0, genderLimit:g.genderLimit||'', ageMin:g.ageMin||0, ageMax:g.ageMax||0, limitOverride:groupLimitOverride(g),
     groupCapacity:g.groupCapacity||0, note:g.note||'',
     distance:g.distance||0, distanceUnit:g.distanceUnit||'km'
   }]).concat([['__ev',{parentalAge:evDoc.data()?.parentalAge||0, genderLimit:evDoc.data()?.genderLimit||'', ageMin:evDoc.data()?.ageMin||0, ageMax:evDoc.data()?.ageMax||0}]])));
 
   let html='<div class="card" style="background:var(--surface2)">';
-  // 號碼規則依「這筆報名目前所屬的組別」判斷（組別有開啟自訂號碼規則就依組別，沒開啟就依活動）
-  const editG=groupMap[e.groupId];
-  const editBibCfg=getEffBibSettings(editG,evDoc.data());
-  const canChangeBib=editBibCfg.allowBibChange&&isRunnerRegOpen(evDoc.data(),0)&&bibModeOf(evDoc.data())!=='fixed';
-  html+='<div class="csv-hint">'+(canChangeBib?'可修改以下資料，包含參加者號碼。':'可修改以下資料，ID 與編號無法變更。')+'</div>';
-  if(canChangeBib){
-    const editPad=editBibCfg.pad;
-    // 參加者自助改號碼＝「參加者自選」，範圍依組別/活動解析好的 editBibCfg，解析好的值直接存進 hidden dataset，
-    // 下面所有函式（checkEditBibAvailable／checkBibExhaustedEdit／toggleAvailableBibsEdit／送出驗證）都讀這裡，不用各自重算
-    const editEffMin=editBibCfg.min, editEffMax=editBibCfg.max;
-    const rangeLabel='（號碼須在 '+editEffMin+'～'+editEffMax+' 之間'+((editBibCfg.prefix||editBibCfg.suffix)?'，可只填數字':'')+'，留空可重新自動配號）';
-    html+='<div class="input-group"><label>參加者號碼'+rangeLabel+'</label>'
-      +'<div class="input-row"><input id="'+cardId+'_eBib" type="text" class="input" value="'+esc(e.bibNumber||'')+'" data-old-bib="'+esc(e.bibNumber||'')+'" oninput="applyHalf(this)" onfocus="checkBibExhaustedEdit(\''+eventId+'\',\''+cardId+'\')" onblur="checkEditBibAvailable(\''+eventId+'\',\''+entryDocId+'\',\''+cardId+'\')">'
-      +'<button type="button" class="btn btn-ghost btn-sm" onclick="toggleAvailableBibsEdit(\''+eventId+'\',\''+cardId+'\')">查看可用號碼</button></div>'
-      +'<div id="'+cardId+'_eBibHint" style="font-size:.75rem;margin-top:4px;min-height:18px"></div>'
-      +'<div id="'+cardId+'_eBibAvailPanel" style="display:none;margin-top:6px;padding:8px;background:var(--surface2);border-radius:8px"></div>'
-      +'</div>';
-    html+='<input type="hidden" id="'+cardId+'_bibRange" data-min="'+editEffMin+'" data-max="'+editEffMax+'" data-pad="'+editPad+'" data-old-bib="'+esc(e.bibNumber||'')+'" data-uid="'+esc(e.uniqueId||'')+'">';
-    setBibAffix(cardId+'_eBib',editBibCfg);
-  }
+  // 號碼欄位：規則依「表單上目前選的組別」（組別有開啟自訂號碼規則就依組別，沒開啟就依活動），
+  // 換組別時由 renderEditBibField 重畫（範圍、前後綴、能不能改號碼、編號註解都跟著換）
+  html+='<div id="'+cardId+'_eBibIntro" class="csv-hint"></div><div id="'+cardId+'_eBibWrap"></div>';
   html+='<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="'+cardId+'_eName" type="text" class="input" value="'+esc(r.name||'')+'"></div>';
   html+='<div class="input-group"><label>性別 <span class="required-star">*</span></label><select id="'+cardId+'_eGender" class="input"><option value="男"'+(r.gender==='男'?' selected':'')+'>男</option><option value="女"'+(r.gender==='女'?' selected':'')+'>女</option></select></div>';
   const gMapEsc=escJs(gMapJson);
@@ -2563,7 +2558,7 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   if(idShow)html+='<div class="input-group"><label>身分證字號（1英文+9數字）'+(idReq?' <span class="required-star">*</span>':'')+'</label><input id="'+cardId+'_eIdNumber" type="text" class="input" value="'+esc(r.idNumber||'')+'" oninput="applyHalf(this)" onblur="setFieldError(\''+cardId+'_eIdNumber\',!validateId(this.value.trim()))"></div>';
   html+='<div class="input-group"><label>備註</label><input id="'+cardId+'_eNote" type="text" class="input" value="'+esc(r.note||'')+'"></div>';
   const eGCfg=groupFieldCfg(evDoc.data(), groupList.length);
-  html+=groupSelectHtml(cardId+'_eGroup', groupList, eGCfg, e.groupId||'', 'updateEditParentalBlock(\''+cardId+'\',\''+gMapEsc+'\',\''+evDateEsc+'\');updateEditCustomFieldsVisibility(\''+cardId+'\');updateEditGroupInfo(\''+cardId+'\',\''+gMapEsc+'\')', e.groupId||'');
+  html+=groupSelectHtml(cardId+'_eGroup', groupList, eGCfg, e.groupId||'', 'updateEditParentalBlock(\''+cardId+'\',\''+gMapEsc+'\',\''+evDateEsc+'\');updateEditCustomFieldsVisibility(\''+cardId+'\');updateEditGroupInfo(\''+cardId+'\',\''+gMapEsc+'\');renderEditBibField(\''+cardId+'\')', e.groupId||'');
   // 組別隱藏時 groupSelectHtml 只產生隱藏的下拉選單；這兩個提示區塊仍要存在，給 updateEditGroupInfo 使用
   html+='<div id="'+cardId+'_eGroupNote" style="font-size:.8rem;margin-top:6px;color:var(--text);white-space:pre-line'+(eGCfg.show?'':';display:none')+'"></div>'
     +'<div id="'+cardId+'_eGroupHint" style="font-size:.75rem;margin-top:4px;min-height:16px;color:var(--muted)'+(eGCfg.show?'':';display:none')+'"></div>'
@@ -2629,9 +2624,40 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   //（與之後改生日/組別時走同一條判斷路徑，不會有初始不判斷的問題）
   updateEditParentalBlock(cardId,gMapJson,evDate);
   updateEditCustomFieldsVisibility(cardId);
+  const BIB_KEYS=['bibOverride','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax','bibNote','bibPrefix','bibSuffix'];
+  const pick=(o,extra)=>Object.fromEntries(BIB_KEYS.concat(extra||[]).filter(k=>o&&o[k]!==undefined).map(k=>[k,o[k]]));
+  box.dataset.bibctx=JSON.stringify({ev:pick(evDoc.data(),['bibPadLength','bibMode','seriesId']),groups:Object.fromEntries(groupList.map(g=>[g.id,pick(g)])),
+    regOpen:isRunnerRegOpen(evDoc.data(),0),oldBib:e.bibNumber||'',uid:e.uniqueId||'',eventId,entryDocId});
+  renderEditBibField(cardId);
   updateEditGroupInfo(cardId,gMapJson);
 }
 
+// 修改表單：依目前選擇的組別畫號碼欄位（範圍、前後綴、能不能改號碼、編號註解）。
+// 已經填的號碼保留；換到不能改號碼的組別時不顯示欄位（號碼維持原本的）。
+// 下面的 checkEditBibAvailable／checkBibExhaustedEdit／toggleAvailableBibsEdit／送出驗證都讀 hidden 的 _bibRange。
+window.renderEditBibField=function(cardId){
+  const box=document.getElementById(cardId+'_edit'); const wrap=document.getElementById(cardId+'_eBibWrap');
+  if(!box||!wrap)return;
+  let c={}; try{c=JSON.parse(box.dataset.bibctx||'{}');}catch(err){return;}
+  const gid=document.getElementById(cardId+'_eGroup')?.value||'';
+  const cfg=getEffBibSettings((c.groups||{})[gid],c.ev||{});
+  const canChange=cfg.allowBibChange&&c.regOpen&&bibModeOf(c.ev||{})!=='fixed';
+  const intro=document.getElementById(cardId+'_eBibIntro');
+  if(intro)intro.textContent=canChange?'可修改以下資料，包含參加者號碼。':'可修改以下資料，ID 與編號無法變更。';
+  const cur=document.getElementById(cardId+'_eBib');
+  const val=cur?cur.value:(c.oldBib||'');
+  if(!canChange){wrap.innerHTML='';return;}
+  const ev=c.eventId, en=c.entryDocId;
+  wrap.innerHTML='<div class="input-group"><label>參加者號碼（號碼須在 '+cfg.min+'～'+cfg.max+' 之間'+((cfg.prefix||cfg.suffix)?'，可只填數字':'')+'，留空可重新自動配號）</label>'
+    +'<div class="input-row"><input id="'+cardId+'_eBib" type="text" class="input" value="'+esc(val)+'" data-old-bib="'+esc(c.oldBib||'')+'" oninput="applyHalf(this)" onfocus="checkBibExhaustedEdit(\''+ev+'\',\''+cardId+'\')" onblur="checkEditBibAvailable(\''+ev+'\',\''+en+'\',\''+cardId+'\')">'
+    +'<button type="button" class="btn btn-ghost btn-sm" onclick="toggleAvailableBibsEdit(\''+ev+'\',\''+cardId+'\')">查看可用號碼</button></div>'
+    +(cfg.note?'<div style="font-size:.75rem;color:var(--text);margin-top:4px;white-space:pre-line">'+esc(cfg.note)+'</div>':'')
+    +'<div id="'+cardId+'_eBibHint" style="font-size:.75rem;margin-top:4px;min-height:18px"></div>'
+    +'<div id="'+cardId+'_eBibAvailPanel" style="display:none;margin-top:6px;padding:8px;background:var(--surface2);border-radius:8px"></div>'
+    +'</div>'
+    +'<input type="hidden" id="'+cardId+'_bibRange" data-min="'+cfg.min+'" data-max="'+cfg.max+'" data-pad="'+cfg.pad+'" data-old-bib="'+esc(c.oldBib||'')+'" data-uid="'+esc(c.uid||'')+'">';
+  setBibAffix(cardId+'_eBib',cfg);
+};
 // 修改表單：依目前選擇的組別，顯示組別註解與限制摘要
 // （跟新報名表單的 onSignupGroupChange 邏輯一致；灰字=純資訊提示，真的驗證失敗時另外在 saveEditEntry 裡改成紅字）
 window.updateEditGroupInfo=function(cardId, gMapJson){
@@ -2643,12 +2669,7 @@ window.updateEditGroupInfo=function(cardId, gMapJson){
   const g=gMap[group];
   noteEl.textContent=g?.note||'';
   if(!g){hint.textContent='';return;}
-  const hints=[];
-  if(g.genderLimit)hints.push('限'+g.genderLimit+'性');
-  if(g.ageMin>0)hints.push(g.ageMin+'歲以上');
-  if(g.ageMax>0)hints.push(g.ageMax+'歲以下');
-  if(g.groupCapacity>0)hints.push('限'+g.groupCapacity+'人');
-  if(g.parentalAge>0)hints.push(g.parentalAge+'歲以下須家長陪同聲明');
+  const hints=groupLimitHints(g);
   hint.textContent=groupHintText(g,hints);
   hint.style.whiteSpace='pre-line';
   hint.style.color='var(--muted)';
