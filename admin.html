@@ -1840,9 +1840,9 @@ window.showMemberListStatus=async function showMemberListStatus(p){
 window.newMemberList=async function(p,kindArg){
   const kind=kindArg||kindOfMode(document.getElementById(p+'MemberMode').value);
   const name=(prompt('新'+(kind==='temps'?'臨時編號清單':'會員名單')+'的名稱（例：'+(kind==='temps'?'春季賽來賓編號':'2027 會員名單')+'）')||'').trim().slice(0,40);
-  if(!name) return;
+  if(!name){ MLIB_BACK=false; return; }
   const lib=await loadMemberLib(true);
-  if(lib.some(l=>l.name===name)&&!confirm('名單庫裡已經有「'+name+'」，還要建立一份同名的嗎？')) return;
+  if(lib.some(l=>l.name===name)&&!confirm('名單庫裡已經有「'+name+'」，還要建立一份同名的嗎？')){ MLIB_BACK=false; return; }
   const ref=await addDoc(collection(db,'systems',SYS,'memberLists'),{name,kind,members:[],temps:[],tempNotes:{},createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
   await loadMemberLib(true);
   if(p) await fillMemberListSelect(p,ref.id);
@@ -1883,7 +1883,8 @@ let MLIB_P='ev', MLIB_BACK=false;
 window.mlibPick=async function(id){ await fillMemberListSelect(MLIB_P,id); document.getElementById('memberLibModal').style.display='none'; showToast('已選用，記得儲存'+(MLIB_P==='ev'?'活動':'組別')); };
 // 從名單庫打開的編輯視窗，關閉後回到名單庫（筆數、用在哪裡會更新）
 window.mlibEdit=async function(id){ await openMemberEditorById(id,MLIB_P); if(ML&&ML.listId===id) ML.backToLib=true; };
-window.mlibNew=function(kind){ document.getElementById('memberLibModal').style.display='none'; MLIB_BACK=true; newMemberList(MLIB_P,kind); };
+// 名單庫不先關：取消輸入名稱就留在名單庫；真的建立、打開編輯視窗時才會關（openMemberEditorById）
+window.mlibNew=function(kind){ MLIB_BACK=true; newMemberList(MLIB_P,kind); };
 
 // 生日：1980/1/1、1980-01-01、1980.1.1、19800101 都整理成 1980/01/01；性別：男／女／M／F
 function normBdayCsv(v){ v=String(v||'').trim(); const m=v.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/)||v.match(/^(\d{4})(\d{2})(\d{2})$/); return m?m[1]+'/'+m[2].padStart(2,'0')+'/'+m[3].padStart(2,'0'):''; }
