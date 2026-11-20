@@ -530,11 +530,9 @@ async function selectSignupEvent(eventId, keepWrapper){
     const evIdForReg=curSignupEvent.id;
     callFn('bibLookup')({eventId:evIdForReg}).then(()=>{ delete availBibSetByEvent[evIdForReg]; }).catch(()=>{});
   }
-  // 活動層級的報名限制（每一位參加者都要符合）
+  // 活動層級的報名限制：沒有顯示組別欄位時放在上面；有組別欄位時放在組別下方（沒選組別＝活動的限制，選了組別＝那個組別適用的限制）
   const evLim=limitHintList(curSignupEvent);
-  const anyGroupOwn=Object.values(window._signupGroupMap||{}).some(groupLimitOverride);
-  if(evLim.length) formHtml+='<div class="card" style="padding:10px 14px;font-size:.85rem"><strong>報名限制：</strong>'+esc(evLim.join('、'))
-    +(anyGroupOwn?'<div style="font-size:.78rem;color:var(--muted);margin-top:2px">有些組別有自己的報名限制，以組別說明為準。</div>':'')+'</div>';
+  if(evLim.length&&!groupFieldCfg(curSignupEvent, groupDocs.length).show) formHtml+='<div class="card" style="padding:10px 14px;font-size:.85rem"><strong>報名限制：</strong>'+esc(evLim.join('、'))+'</div>';
   // 開放多人報名的活動：先選「個人報名」或「多人報名」
   const multiOn=curSignupEvent.multiSignup?.enabled===true;
   if(multiOn){
@@ -975,12 +973,11 @@ window.onSignupGroupChange=function(){
   // 邀請碼：組別有設用組別的，否則用活動的
   if(inviteRow&&inviteTarget(curSignupEvent,g))inviteRow.style.display='';
   refreshMemberField('suMemberNo',curSignupEvent,g);
-  if(!g){ if(hint)hint.textContent=''; return; }
   if(!hint)return;
-  // 限制摘要
-  const hints=groupLimitHints(g);
-  hint.textContent=groupHintText(g,hints);
+  // 限制說明：沒選組別＝活動的限制；選了組別＝這個組別適用的限制
+  hint.textContent=limitHintText(curSignupEvent,g);
   hint.style.whiteSpace='pre-line';
+  hint.style.color='var(--muted)';
 }
 
 // 依目前填寫的生日判斷是否需要顯示家長聲明區塊，並更新模組變數 curSignupNeedsParental
@@ -1884,8 +1881,7 @@ window.mfRefresh=function(ns){
     const g=st.groupMap[document.getElementById(P+'group')?.value||''];
     const gh=document.getElementById(P+'ghint');
     if(gh){
-      const hints=g?groupLimitHints(g):[];
-      gh.textContent=g?[g.note||'',groupHintText(g,hints)].filter(Boolean).join('\n'):'';
+      gh.textContent=[g?(g.note||''):'',limitHintText(st.ev,g)].filter(Boolean).join('\n');
     }
     const inv=document.getElementById(P+'inviteRow');
     if(inv){ const gid=document.getElementById(P+'group')?.value||''; const og=(st.origGroup||{})[k]||'';
@@ -2590,7 +2586,7 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
     memberMode:g.memberMode||'', memberLabel:g.memberLabel||'',
     groupCapacity:g.groupCapacity||0, note:g.note||'',
     distance:g.distance||0, distanceUnit:g.distanceUnit||'km'
-  }]).concat([['__ev',{parentalAge:evDoc.data()?.parentalAge||0, genderLimit:evDoc.data()?.genderLimit||'', ageMin:evDoc.data()?.ageMin||0, ageMax:evDoc.data()?.ageMax||0}]])));
+  }]).concat([['__ev',{parentalAge:evDoc.data()?.parentalAge||0, genderLimit:evDoc.data()?.genderLimit||'', ageMin:evDoc.data()?.ageMin||0, ageMax:evDoc.data()?.ageMax||0, memberMode:evDoc.data()?.memberMode||'', memberLabel:evDoc.data()?.memberLabel||''}]])));
 
   let html='<div class="card" style="background:var(--surface2)">';
   // 號碼欄位：規則依「表單上目前選的組別」（組別有開啟自訂號碼規則就依組別，沒開啟就依活動），
@@ -2739,14 +2735,23 @@ window.updateEditGroupInfo=function(cardId, gMapJson){
   const group=document.getElementById(cardId+'_eGroup')?.value;
   const g=gMap[group];
   noteEl.textContent=g?.note||'';
-  if(!g){hint.textContent='';return;}
-  const hints=groupLimitHints(g);
-  hint.textContent=groupHintText(g,hints);
+  hint.textContent=limitHintText(gMap.__ev||{},g);
   hint.style.whiteSpace='pre-line';
   hint.style.color='var(--muted)';
 }
+// 組別下方的說明：沒選組別＝「活動報名限制」；選了組別＝「此組別報名限制」（組別自訂就是組別的，沒自訂就是活動的）＋組別名額
+// 報名表單、多人報名、修改表單共用（邀請碼另有欄位，不列）
+function limitHintText(ev, g){
+  const own=!!g&&groupLimitOverride(g);
+  const list=limitHintList(own?g:(ev||{})).filter(x=>x!=='需要邀請碼');
+  if(g&&g.groupCapacity>0) list.push('限'+g.groupCapacity+'人');
+  const lines=[];
+  const dist=g?groupDistText(g.distance,g.distanceUnit):'';
+  if(dist) lines.push('組別資訊：'+dist);
+  if(list.length) lines.push((g?'此組別報名限制：':'活動報名限制：')+list.join('、'));
+  return lines.join('\n');
+}
 // 組別提示文字：第一行「組別資訊」（有設定距離才顯示），第二行「此組別限制」
-// 報名表單、修改表單共用，兩邊才不會各寫一套
 function groupHintText(g, limitHints){
   const dist=groupDistText(g.distance,g.distanceUnit);
   const lines=[];
