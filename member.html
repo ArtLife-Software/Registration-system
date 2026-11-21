@@ -528,7 +528,7 @@ async function selectSignupEvent(eventId, keepWrapper){
   // 優先沿用／固定沿用：報名開始後第一次有人打開報名表時建立號碼登記表（建立過就不會重建）
   if(bibModeOf(curSignupEvent)!=='none'&&isRunnerRegOpen(curSignupEvent,0)){
     const evIdForReg=curSignupEvent.id;
-    callFn('bibLookup')({eventId:evIdForReg}).then(()=>{ delete availBibSetByEvent[evIdForReg]; }).catch(()=>{});
+    callFn('bibLookup')({eventId:evIdForReg}).catch(()=>{});
   }
   // 活動層級的報名限制：沒有顯示組別欄位時放在上面；有組別欄位時放在組別下方（沒選組別＝活動的限制，選了組別＝那個組別適用的限制）
   const evLim=limitHintList(curSignupEvent);
@@ -649,10 +649,9 @@ async function selectSignupEvent(eventId, keepWrapper){
 // 顯示/隱藏、標籤上的範圍提示、輸入框 placeholder。組別切換時呼叫一次。
 // ── 優先沿用／固定沿用：填完姓名、性別、生日（與手機、Email、身分證）就比對，帶出上一期的號碼 ──
 // 對到相似的人時當場確認是不是同一人；確認的結果送出時一起帶上，不會再問一次
-const bibInRangeFront=(n,c)=>(n>=c.autoMin&&n<=c.autoMax)||(n>=c.min&&n<=c.max);
 // 比對用的關鍵資料改了才重新比對（手機、Email 改了不重問；送出時伺服器會再確認比對對象沒變）
 const bibPreKey=pr=>[pr.name,pr.gender,pr.birthday,pr.idNumber].join('|');
-function newBibPre(){ return {key:'',own:0,identity:null,done:false}; }
+function newBibPre(){ return {key:'',own:'',ownIn:{},identity:null,done:false}; } // ownIn：組別 ID → 舊號碼在那個組別能沿用時要填的數字（伺服器判斷）
 let suBibPre=newBibPre();
 const bibLookupTimers={};
 function bibLookupProfile(get){
@@ -679,43 +678,49 @@ async function runBibLookup(ev,pr,pre,who){
     }
     pre.identity=idq;
     if(key!==pre.key) return false;
-    pre.own=res.oldNum||0; pre.done=true;
+    pre.own=String(res.oldBib||''); pre.ownIn=res.ownIn||{}; pre.done=true; // 舊號碼：完整號碼（例如 A015），原樣沿用；能不能在各組沿用由伺服器判斷
     return true;
   }catch(e){ pre.key=''; if(/ID/.test(e.message||'')) showToast(e.message,'error'); return false; }
 }
-// 號碼欄位下方的說明（固定沿用不顯示號碼欄位，只顯示這段）
-function bibPreInfoHtml(ev,pre,cfg,inputId){
+// 號碼欄位下方的說明（固定沿用不顯示號碼欄位，只顯示這段）。gid＝目前選的組別（''＝沒有組別）
+function bibPreInfoHtml(ev,pre,gid){
   const mode=bibModeOf(ev);
   if(mode==='none') return '';
   if(pre.own){
-    const full=bibStr(pre.own,cfg.pad,inputId);
-    if(!bibInRangeFront(pre.own,cfg)) return '<span style="color:var(--red)">你的號碼 '+esc(full)+' 不在這個組別的號碼範圍內'+(mode==='fixed'?'，本期不能報名這個組別':'，會改配這個組別的號碼')+'</span>';
-    return '✅ 你的號碼是 <strong class="mono">'+esc(full)+'</strong>，本期'+(mode==='fixed'?'固定沿用':(ev.bibOldCanChange===true?'優先沿用（留空或保留就會沿用，也可以換）':'沿用，不能換號碼'));
+    // 舊號碼（完整號碼）要在這個組別的號碼集合裡：伺服器查舊號碼時一併判斷好各組別能不能沿用
+    if(!(pre.ownIn||{})[gid||'']) return '<span style="color:var(--red)">你的號碼 '+esc(pre.own)+' 不在這個組別的號碼範圍內'+(mode==='fixed'?'，本期不能報名這個組別':'，會改配這個組別的號碼')+'</span>';
+    return '✅ 你的號碼是 <strong class="mono">'+esc(pre.own)+'</strong>，本期'+(mode==='fixed'?'固定沿用':(ev.bibOldCanChange===true?'優先沿用（留空或保留就會沿用，也可以換）':'沿用，不能換號碼'));
   }
   if(mode==='fixed') return pre.done?'<span style="color:var(--red)">本期只開放已有號碼的成員報名，查無你的號碼</span>':'本期號碼固定沿用：填完姓名、性別、生日後會顯示你的號碼';
   return '';
 }
 // 把舊號碼填進號碼欄（欄位空白、或先前是自動帶入的才填，參加者自己改過就不動）
-const bibOwnByInput={}; // 輸入框 id → 這個人自己的舊號碼（可用號碼選單最前面列出）
 // lock：優先沿用但舊成員不能換號碼 → 號碼欄鎖住只顯示原號碼
-function fillBibInput(inputId,pre,cfg,lock){
-  bibOwnByInput[inputId]=(pre.own&&bibInRangeFront(pre.own,cfg))?pre.own:0;
+// 舊號碼在這個組別的號碼集合裡才填進去（伺服器判斷）；不在集合裡就不沿用（固定沿用不能報這組，優先沿用改配）
+function fillBibInput(inputId,pre,gid,lock){
+  const digits=(pre.ownIn||{})[gid||'']||'';
   const el=document.getElementById(inputId); if(!el) return;
-  const locked=!!(lock&&bibOwnByInput[inputId]);
+  const locked=!!(lock&&digits);
   el.readOnly=locked;
   const pickBtn=el.parentElement&&el.parentElement.querySelector('button'); if(pickBtn) pickBtn.disabled=locked;
-  if(locked){ el.value=String(pre.own).padStart(cfg.pad,'0'); el.dataset.auto='1'; return; }
-  if(pre.own&&bibInRangeFront(pre.own,cfg)){
-    if(el.value.trim()===''||el.dataset.auto==='1'){ el.value=String(pre.own).padStart(cfg.pad,'0'); el.dataset.auto='1'; }
+  if(locked){ el.value=digits; el.dataset.auto='1'; return; }
+  if(digits){
+    if(el.value.trim()===''||el.dataset.auto==='1'){ el.value=digits; el.dataset.auto='1'; }
   }else if(el.dataset.auto==='1'){ el.value=''; el.dataset.auto=''; }
+}
+function fromMemberInfoHtml(label,edit){
+  return '<div style="padding:8px 10px;background:var(--surface2);border-radius:8px;font-size:.82rem">🔢 號碼就是你的'+esc(label)+'（不用另外選號碼）'
+    +(edit?'；換到這個組別或改了'+esc(label)+'，號碼會跟著換':'')+'</div>';
 }
 function applySignupBibPre(){
   if(!curSignupEvent) return;
   const g=window._signupGroupMap?.[document.getElementById('suGroup')?.value];
   const cfg=getEffBibSettings(g);
   const row=document.getElementById('suBibRow');
-  if(row&&row.style.display!=='none') fillBibInput('suBib',suBibPre,cfg,bibModeOf(curSignupEvent)==='prefer'&&curSignupEvent.bibOldCanChange!==true);
-  const info=document.getElementById('suBibInfo'); if(info) info.innerHTML=bibPreInfoHtml(curSignupEvent,suBibPre,cfg,'suBib');
+  if(cfg.fromMember){ const info=document.getElementById('suBibInfo'); if(info) info.innerHTML=fromMemberInfoHtml(cfg.fromMember); return; }
+  const gid=document.getElementById('suGroup')?.value||'';
+  if(row&&row.style.display!=='none') fillBibInput('suBib',suBibPre,gid,bibModeOf(curSignupEvent)==='prefer'&&curSignupEvent.bibOldCanChange!==true);
+  const info=document.getElementById('suBibInfo'); if(info) info.innerHTML=bibPreInfoHtml(curSignupEvent,suBibPre,gid);
 }
 window.scheduleSignupBibLookup=function(){
   if(!curSignupEvent||bibModeOf(curSignupEvent)==='none') return;
@@ -731,8 +736,8 @@ function refreshSignupBibField(g){
   const cfg=getEffBibSettings(g);
   const {pad,allowCustomBib,min,max}=cfg;
   setBibAffix('suBib',cfg);
-  // 固定沿用：號碼不能自選，不顯示號碼欄位（下方 suBibInfo 會顯示沿用的號碼）
-  if(!allowCustomBib||bibModeOf(curSignupEvent)==='fixed'){row.style.display='none';applySignupBibPre();return;}
+  // 固定沿用：號碼不能自選，不顯示號碼欄位（下方 suBibInfo 會顯示沿用的號碼）；號碼使用會員編號也不顯示
+  if(cfg.fromMember||!allowCustomBib||bibModeOf(curSignupEvent)==='fixed'){row.style.display='none';applySignupBibPre();return;}
   row.style.display='';
   const noteEl=document.getElementById('suBibNote'); if(noteEl) noteEl.textContent=cfg.note||'';
   const label=document.getElementById('suBibLabel');
@@ -1030,13 +1035,6 @@ function bibParseCfg(raw,a){
 function bibNumOf(raw,inputId){ return bibParseCfg(raw,bibAffix[inputId]); }
 // 編號模式（只在活動屬於系列時有作用）：none 不須沿用／prefer 優先沿用／fixed 固定沿用
 function bibModeOf(ev){ return (ev&&ev.seriesId&&['prefer','fixed'].includes(ev.bibMode))?ev.bibMode:'none'; }
-// 一筆報名資料的號碼數字（新資料有 bibNum；舊資料依所屬組別／活動的格式解析）
-function entryBibNumFront(ev,groups,e){
-  if(Number.isInteger(e.bibNum)&&e.bibNum>0) return e.bibNum;
-  if(!e.bibNumber) return 0;
-  for(const g of [groups[e.groupId],null]){ const n=bibParseCfg(e.bibNumber,getEffBibSettings(g,ev)); if(!isNaN(n)&&n>0) return n; }
-  const m=/(\d+)/.exec(e.bibNumber); return m?parseInt(m[1],10):0;
-}
 // 輸入框左右的前後綴文字
 function bibAffixWrap(inputHtml,inputId){
   return '<span id="'+inputId+'_pre" class="mono" style="font-weight:700;color:var(--muted)"></span>'+inputHtml+'<span id="'+inputId+'_suf" class="mono" style="font-weight:700;color:var(--muted)"></span>';
@@ -1147,196 +1145,125 @@ function getEffBibSettings(g,evOverride){
   const prefix=String((useGroup?g.bibPrefix:ev.bibPrefix)||''), suffix=String((useGroup?g.bibSuffix:ev.bibSuffix)||'');
   const note=String((useGroup?g.bibNote:ev.bibNote)||'');
   const auto=bibEffRange(rMin,rMax,pad);
-  return {pad,allowCustomBib,allowBibChange,min,max,prefix,suffix,note,autoMin:auto.min,autoMax:auto.max};
+  // 編號使用會員編號及臨時編號：開關打開、而且報名限制是「限會員」或「臨時編號」並選了名單 → 號碼就是編號（回傳編號名稱；沒作用＝''）
+  const mr=memberRuleR(ev,g);
+  const fromMember=((useGroup?g.bibFromMember:ev.bibFromMember)===true&&memberNeedsInput(mr)&&!!limitSource(ev,g).o.memberListId)?mr.label:'';
+  return {pad,allowCustomBib,allowBibChange,min,max,prefix,suffix,note,autoMin:auto.min,autoMax:auto.max,fromMember};
 }
 
-// ── 號碼：數字在活動內唯一（不看前後綴）──
-// availBibSetByEvent[eventId]＝{ used: Map(數字→報名文件ID), old: {數字: 第幾新的一期}, mode }
-// old 是號碼登記表裡的舊號碼（優先沿用／固定沿用才有），可用號碼清單先列新號碼，新號碼用完才從最舊那期放出
-let availBibSetByEvent={};
-let availBibCursors={}; // panelId -> 目前批次起始號碼
+// ── 號碼池：哪些號碼能用一律問伺服器（bibPool），參加者頁不自己算 ──
+// 伺服器的號碼池跟送出報名時是同一套判斷（已用、保留給會員名單、舊號碼開放規則、範圍、前後綴）
+// 每個號碼欄位記住它的情境：活動、組別、修改哪一筆、這個人的舊號碼
+const bibTextR=v=>String(v==null?'':v).normalize('NFKC').replace(/\s+/g,'').toUpperCase();
 const AVAIL_BIB_BATCH=30;
-async function getUsedBibSetFor(eventId,fresh){
-  if(!fresh&&availBibSetByEvent[eventId]) return availBibSetByEvent[eventId];
-  const base=['systems',SYS,'events',eventId];
-  const [evSnap,rSnap,gSnap]=await Promise.all([getDoc(doc(db,...base)),getDocs(collection(db,...base,'runners')),getDocs(collection(db,...base,'groups'))]);
-  const ev=evSnap.data()||{}; const groups={}; gSnap.docs.forEach(d=>{groups[d.id]=d.data();});
-  const used=new Map();
-  rSnap.docs.forEach(d=>{const n=entryBibNumFront(ev,groups,d.data()); if(n>0) used.set(n,d.id);});
-  const mode=bibModeOf(ev); let old={};
-  if(mode!=='none'){ try{ const o=await getDoc(doc(db,...base,'settings','bibOldNums')); if(o.exists()) old=o.data().nums||{}; }catch(e){} }
-  const info={used,old,mode}; availBibSetByEvent[eventId]=info; return info;
+let availBibCursors={}; // panelId → 下一批從哪個數字開始
+const bibCtxByInput={}; // 號碼欄位 id → {eventId, groupId, entryDocId, own}
+async function bibPoolCall(inputId,data){
+  const c=bibCtxByInput[inputId]||{};
+  return (await callFn('bibPool')({eventId:c.eventId,groupId:c.groupId||'',entryDocId:c.entryDocId||'',own:c.own||'',...data})).data;
 }
-function countAvailBibsIn(info,min,max){
-  let u=0; info.used.forEach((_,n)=>{ if(n>=min&&n<=max) u++; });
-  return (max-min+1)-u;
+// 號碼欄位的提示
+function setBibHint(inputId,hintId,ok,html){
+  const el=document.getElementById(inputId), hint=document.getElementById(hintId);
+  if(el) el.style.borderColor=ok===null?'':(ok?'var(--green)':'var(--red)');
+  if(hint) hint.innerHTML=html||'';
 }
-const isOldNum=(info,n)=>Object.prototype.hasOwnProperty.call(info.old||{},n);
-// 範圍內還有沒有「新號碼」（沒人用、也不是舊成員的號碼）
-function hasNewBibIn(info,min,max){ for(let n=min;n<=max;n++){ if(!info.used.has(n)&&!isOldNum(info,n)) return true; } return false; }
-// 新號碼用完時目前開放的那一期（舊號碼一次只開放最舊的一期；own＝自己的舊號碼，不算在內）
-function openOldPeriod(info,min,max,own){
-  let sOpen=-1;
-  Object.keys(info.old||{}).forEach(k=>{ const n=+k; if(n>=min&&n<=max&&n!==own&&!info.used.has(n)&&info.old[k]>sOpen) sOpen=info.old[k]; });
-  return sOpen;
-}
-// 號碼能不能用（自選號碼池）：回傳錯誤訊息或 ''（exceptDocId：修改報名時自己的那筆；own：自己的舊號碼）
-function bibNumProblem(info,n,min,max,exceptDocId,own){
-  const h=info.used.get(n);
-  if(h&&h!==exceptDocId) return '此號碼已被使用，請換一個';
-  if(info.mode==='prefer'&&isOldNum(info,n)&&n!==own){
-    if(hasNewBibIn(info,min,max)) return '此號碼保留給舊成員，請從「查看可用號碼」選擇';
-    if(info.old[n]!==openOldPeriod(info,min,max,own)) return '此號碼目前還沒開放，請從「查看可用號碼」選擇';
-  }
-  return '';
-}
-// ── 即時號碼檢查（報名表單自選號碼）──
-window.checkBibAvailable=async function(){
-  const el=document.getElementById('suBib');
-  const hint=document.getElementById('suBibHint');
-  if(!el||!hint)return;
-  const bib=el.value.trim();
-  if(!bib){hint.textContent='';el.style.borderColor='';return;}
-  const n=bibNumOf(bib,'suBib');
-  if(isNaN(n)||n<1){
-    el.style.borderColor='var(--red)';
-    hint.innerHTML='<span style="color:var(--red)">❌ 請填數字（前後綴會自動加上）</span>';
-    return;
-  }
-  if(!curSignupEvent){return;}
-  const curG=window._signupGroupMap?.[document.getElementById('suGroup')?.value];
-  const {pad,min:effMin,max:effMax}=getEffBibSettings(curG);
-  const own=suBibPre.own||0;
-  if(n!==own&&(n<effMin||n>effMax)){
-    el.style.borderColor='var(--red)';
-    hint.innerHTML='<span style="color:var(--red)">❌ 號碼須在 '+effMin+'～'+effMax+' 之間</span>';
-    return;
-  }
-  const info=await getUsedBibSetFor(curSignupEvent.id,true);
-  const prob=bibNumProblem(info,n,effMin,effMax,'',own);
-  const padded=bibStr(n,pad,'suBib');
-  if(prob){
-    el.style.borderColor='var(--red)';
-    hint.innerHTML='<span style="color:var(--red)">❌ '+esc(prob)+'</span>';
-  }else{
-    el.style.borderColor='var(--green)';
-    hint.innerHTML='<span style="color:var(--green)">✅ 號碼 '+esc(padded)+(n===own?' 是你原本的號碼':' 可使用')+'</span>'
-      +(own&&n!==own?'<div style="color:var(--muted)">主辦單位建議沿用你原本的號碼 '+esc(bibStr(own,pad,'suBib'))+'</div>':'');
-  }
+// 檢查號碼欄位填的號碼（失焦時、送出前）：回傳 {ok, bib, message}；oldBib＝修改報名原本的號碼（沒換就不檢查）
+async function checkBibInput(inputId,hintId,oldBib){
+  const el=document.getElementById(inputId); if(!el) return {ok:true,bib:''};
+  const raw=el.value.trim();
+  if(!raw||(oldBib&&raw===oldBib)){ setBibHint(inputId,hintId,null,''); return {ok:true,bib:raw?oldBib:''}; }
+  let r;
+  try{ r=await bibPoolCall(inputId,{action:'check',bib:raw}); }catch(e){ setBibHint(inputId,hintId,null,''); return {ok:true,bib:'',offline:true}; } // 連不上就交給送出時判斷
+  if(!r.ok){ setBibHint(inputId,hintId,false,'<span style="color:var(--red)">❌ '+esc(r.message)+'</span>'); return r; }
+  if(r.keep){ setBibHint(inputId,hintId,null,''); return r; }
+  const own=(bibCtxByInput[inputId]||{}).own||'';
+  setBibHint(inputId,hintId,true,'<span style="color:var(--green)">✅ 號碼 '+esc(r.bib)+(r.own?' 是你原本的號碼':' 可使用')+'</span>'
+    +(own&&!r.own?'<div style="color:var(--muted)">主辦單位建議沿用你原本的號碼 '+esc(own)+'</div>':''));
+  return r;
 }
 // 可用號碼＝0時，把值還原成安全狀態＋提示，但不 disable 欄位——因為修改報名時「留空自動配」跟
 // 「維持原本編號」都是合法選項，硬鎖住欄位會讓使用者卡在其中一個選項
-function lockBibFieldIfExhausted(min,max,pad,totalAvail,inputId,hintId){
-  if(totalAvail>0)return false;
+function lockBibFieldIfExhausted(L,inputId,hintId){
+  if(L.total>0||L.own) return false;
   const el=document.getElementById(inputId);
-  const hint=document.getElementById(hintId);
-  if(el){
-    if(el.value.trim()!=='') el.value=el.dataset.oldBib||'';
-    el.style.borderColor='';
-    el.placeholder='此範圍號碼已全部被使用';
-  }
-  if(hint)hint.innerHTML='<span style="color:var(--red)">❌ 此範圍（'+bibStr(min,pad,inputId)+'～'+bibStr(max,pad,inputId)+'）號碼已全部被使用，請留空由系統自動配號</span>';
+  if(el){ if(el.value.trim()!=='') el.value=el.dataset.oldBib||''; el.style.borderColor=''; el.placeholder='此範圍號碼已全部被使用'; }
+  setBibHint(inputId,hintId,null,'<span style="color:var(--red)">❌ 此範圍（'+esc(L.min)+'～'+esc(L.max)+'）號碼已全部被使用，請留空由系統自動配號</span>');
   return true;
 }
 // 參加者第一次點進號碼欄位時才查一次（不在頁面載入時就查，避免不打算自選號碼的人也多耗一次查詢）
-async function checkBibExhaustedGeneric(eventId,rMin,rMax,pad,inputId,hintId){
+async function checkBibExhaustedFor(inputId,hintId){
   const el=document.getElementById(inputId);
-  if(!el||el.disabled||el.dataset.exhaustChecked==='1'||!eventId)return;
+  if(!el||el.disabled||el.readOnly||el.dataset.exhaustChecked==='1') return;
   el.dataset.exhaustChecked='1';
-  const info=await getUsedBibSetFor(eventId);
-  const {min,max}=bibEffRange(rMin,rMax,pad);
-  lockBibFieldIfExhausted(min,max,pad,countAvailBibsIn(info,min,max),inputId,hintId);
+  try{ lockBibFieldIfExhausted(await bibPoolCall(inputId,{action:'list',count:0}),inputId,hintId); }catch(e){}
 }
-async function openAvailBibPanel(eventId,rMin,rMax,pad,inputId,hintId,panelId){
+async function openAvailBibPanel(inputId,hintId,panelId){
   const panel=document.getElementById(panelId);
-  if(!panel||!eventId)return;
-  if(panel.style.display==='block'){panel.style.display='none';return;}
+  if(!panel) return;
+  if(panel.style.display==='block'){ panel.style.display='none'; return; }
   panel.style.display='block';
-  panel.innerHTML='<div style="font-size:.75rem;color:var(--muted)">查詢可用號碼中...</div>';
-  await getUsedBibSetFor(eventId,true);
-  const {min}=bibEffRange(rMin,rMax,pad);
-  availBibCursors[panelId]=min;
-  renderAvailBibPanel(eventId,rMin,rMax,pad,inputId,hintId,panelId);
+  availBibCursors[panelId]=0;
+  await renderAvailBibPanel(inputId,hintId,panelId);
 }
-function renderAvailBibPanel(eventId,rMin,rMax,pad,inputId,hintId,panelId){
-  const panel=document.getElementById(panelId);
-  const info=availBibSetByEvent[eventId];
-  if(!panel||!info)return;
-  const {min,max}=bibEffRange(rMin,rMax,pad);
-  const totalAvail=countAvailBibsIn(info,min,max);
-  if(lockBibFieldIfExhausted(min,max,pad,totalAvail,inputId,hintId)){
-    panel.innerHTML='<div style="font-size:.8rem;color:var(--red)">此範圍（'+bibStr(min,pad,inputId)+'～'+bibStr(max,pad,inputId)+'）號碼已全部被使用</div>';
-    return;
+async function renderAvailBibPanel(inputId,hintId,panelId){
+  const panel=document.getElementById(panelId); if(!panel) return;
+  panel.innerHTML='<div style="font-size:.75rem;color:var(--muted)">查詢可用號碼中...</div>';
+  let L;
+  try{ L=await bibPoolCall(inputId,{action:'list',count:AVAIL_BIB_BATCH,from:availBibCursors[panelId]||0}); }
+  catch(e){ panel.innerHTML='<div style="font-size:.8rem;color:var(--red)">查不到可用號碼：'+esc(e.message||'')+'</div>'; return; }
+  if(lockBibFieldIfExhausted(L,inputId,hintId)){
+    panel.innerHTML='<div style="font-size:.8rem;color:var(--red)">此範圍（'+esc(L.min)+'～'+esc(L.max)+'）號碼已全部被使用</div>'; return;
   }
-  const btn=n=>'<button type="button" class="btn btn-sm btn-ghost" onclick="pickAvailableBib(\''+inputId+'\',\''+hintId+'\',\''+panelId+'\','+n+')">'+esc(bibStr(n,pad,inputId))+'</button>';
-  // 舊成員：選單最前面是自己的原號碼（沒被用掉才列）
-  const own=bibOwnByInput[inputId]||0;
-  let html=(own&&!info.used.has(own))?'<div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">你的原號碼：</div><div style="margin-bottom:8px">'+btn(own)+'</div>':'';
-  if(hasNewBibIn(info,min,max)){
-    // 新號碼（沒人用、也不是舊成員的號碼）
-    const batch=[]; let n=availBibCursors[panelId]||min;
-    while(batch.length<AVAIL_BIB_BATCH&&n<=max){ if(!info.used.has(n)&&!isOldNum(info,n)&&n!==own)batch.push(n); n++; }
-    const hasMore=n<=max;
-    html+='<div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">目前還有 <strong style="color:var(--accent)">'+totalAvail+'</strong> 個號碼可用（範圍 '+esc(bibStr(min,pad,inputId))+'～'+esc(bibStr(max,pad,inputId))+'），點選即可填入：</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'+batch.map(btn).join('')+'</div>'
-      +'<button type="button" class="btn btn-sm btn-ghost" onclick="moreAvailableBibs(\''+eventId+'\','+rMin+','+rMax+','+pad+',\''+inputId+'\',\''+hintId+'\',\''+panelId+'\','+(hasMore?n:min)+')">'+(hasMore?'換一批 ⟳':'已顯示到範圍尾端，回到開頭 ⟳')+'</button>';
+  const btn=b=>'<button type="button" class="btn btn-sm btn-ghost" onclick="pickAvailableBib(\''+inputId+'\',\''+hintId+'\',\''+panelId+'\',\''+escJs(b)+'\')">'+esc(b)+'</button>';
+  let html=L.own?'<div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">你的原號碼：</div><div style="margin-bottom:8px">'+btn(L.own)+'</div>':'';
+  if(L.kind==='new'){
+    html+='<div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">目前還有 <strong style="color:var(--accent)">'+L.total+'</strong> 個號碼可用（範圍 '+esc(L.min)+'～'+esc(L.max)+'），點選即可填入：</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'+L.nums.map(btn).join('')+'</div>'
+      +'<button type="button" class="btn btn-sm btn-ghost" onclick="moreAvailableBibs(\''+inputId+'\',\''+hintId+'\',\''+panelId+'\','+(L.next||0)+')">'+(L.next?'換一批 ⟳':'已顯示到範圍尾端，回到開頭 ⟳')+'</button>';
+  }else if(L.kind==='old'){
+    html+='<div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">新號碼已用完，目前開放較早期成員用過的號碼：</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+L.nums.map(btn).join('')+'</div>';
   }else{
-    // 新號碼用完：只開放最舊那一期的舊號碼，那一期用完才開放下一期
-    const sOpen=openOldPeriod(info,min,max,own);
-    const olds=Object.keys(info.old).map(Number).filter(n=>n>=min&&n<=max&&n!==own&&!info.used.has(n)&&info.old[n]===sOpen).sort((a,b)=>a-b);
-    html+=olds.length
-      ?'<div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">新號碼已用完，目前開放較早期成員用過的號碼：</div><div style="display:flex;flex-wrap:wrap;gap:6px">'+olds.map(btn).join('')+'</div>'
-      :'<div style="font-size:.8rem;color:var(--muted)">自選範圍內已經沒有號碼可選，請留空由系統自動配號</div>';
+    html+='<div style="font-size:.8rem;color:var(--muted)">自選範圍內已經沒有號碼可選，請留空由系統自動配號</div>';
   }
   panel.innerHTML=html;
 }
-window.moreAvailableBibs=function(eventId,rMin,rMax,pad,inputId,hintId,panelId,cursor){
+window.moreAvailableBibs=function(inputId,hintId,panelId,cursor){
   availBibCursors[panelId]=cursor;
-  renderAvailBibPanel(eventId,rMin,rMax,pad,inputId,hintId,panelId);
+  renderAvailBibPanel(inputId,hintId,panelId);
 }
-window.pickAvailableBib=function(inputId,hintId,panelId,n){
+window.pickAvailableBib=function(inputId,hintId,panelId,full){
   const el=document.getElementById(inputId);
-  const hint=document.getElementById(hintId);
-  if(!el)return;
-  const pad=bibAffix[inputId]?.pad||3;
-  const full=bibStr(n,pad,inputId);
+  if(!el) return;
+  const a=bibAffix[inputId]||{};
+  const n=bibParseCfg(full,a);
   // 輸入框外面已經顯示前後綴（報名表單、多人報名）時只填數字部分
-  el.value=document.getElementById(inputId+'_pre')?String(n).padStart(pad,'0'):full;
+  el.value=(document.getElementById(inputId+'_pre')&&!isNaN(n))?String(n).padStart(a.pad||3,'0'):full;
   el.dataset.auto='';
-  el.style.borderColor='var(--green)';
-  if(hint)hint.innerHTML='<span style="color:var(--green)">✅ 號碼 '+esc(full)+' 可使用</span>';
+  setBibHint(inputId,hintId,true,'<span style="color:var(--green)">✅ 號碼 '+esc(full)+' 可使用</span>');
   const panel=document.getElementById(panelId);
-  if(panel)panel.style.display='none';
+  if(panel) panel.style.display='none';
 }
-// ── 報名表單專用的包裝（帶入 curSignupEvent，範圍先用 resolveSelfSelectBibRange 解析好，
-// 「自訂範圍」優先，沒設就退回「號碼範圍」，再退回位數上限，解析完的值傳給下面共用函式） ──
-window.checkBibExhausted=async function(){
-  if(!curSignupEvent)return;
-  const curG=window._signupGroupMap?.[document.getElementById('suGroup')?.value];
-  const {pad,min,max}=getEffBibSettings(curG);
-  await checkBibExhaustedGeneric(curSignupEvent.id,min,max,pad,'suBib','suBibHint');
+// ── 報名表單 ──
+function setSignupBibCtx(){
+  if(!curSignupEvent) return;
+  bibCtxByInput.suBib={eventId:curSignupEvent.id,groupId:document.getElementById('suGroup')?.value||'',own:suBibPre.own||''};
 }
-window.toggleAvailableBibs=async function(){
-  if(!curSignupEvent)return;
-  const curG=window._signupGroupMap?.[document.getElementById('suGroup')?.value];
-  const {pad,min,max}=getEffBibSettings(curG);
-  await openAvailBibPanel(curSignupEvent.id,min,max,pad,'suBib','suBibHint','suBibAvailPanel');
+window.checkBibAvailable=async function(){ setSignupBibCtx(); await checkBibInput('suBib','suBibHint',''); };
+window.checkBibExhausted=async function(){ setSignupBibCtx(); await checkBibExhaustedFor('suBib','suBibHint'); };
+window.toggleAvailableBibs=async function(){ setSignupBibCtx(); await openAvailBibPanel('suBib','suBibHint','suBibAvailPanel'); };
+// ── 修改報名 ──
+function setEditBibCtx(eventId,cardId){
+  let c={}; try{ c=JSON.parse(document.getElementById(cardId+'_edit')?.dataset.bibctx||'{}'); }catch(e){}
+  bibCtxByInput[cardId+'_eBib']={eventId,groupId:document.getElementById(cardId+'_eGroup')?.value||'',entryDocId:c.entryDocId||''};
 }
-// ── 參加者自助改號碼專用的包裝（帶入該筆記錄的 eventId／範圍設定） ──
-window.checkBibExhaustedEdit=async function(eventId,cardId){
-  const rangeEl=document.getElementById(cardId+'_bibRange');
-  const rMin=rangeEl?parseInt(rangeEl.dataset.min)||0:0;
-  const rMax=rangeEl?parseInt(rangeEl.dataset.max)||0:0;
-  const pad=rangeEl?parseInt(rangeEl.dataset.pad)||3:3;
-  await checkBibExhaustedGeneric(eventId,rMin,rMax,pad,cardId+'_eBib',cardId+'_eBibHint');
-}
-window.toggleAvailableBibsEdit=async function(eventId,cardId){
-  const rangeEl=document.getElementById(cardId+'_bibRange');
-  const rMin=rangeEl?parseInt(rangeEl.dataset.min)||0:0;
-  const rMax=rangeEl?parseInt(rangeEl.dataset.max)||0:0;
-  const pad=rangeEl?parseInt(rangeEl.dataset.pad)||3:3;
-  await openAvailBibPanel(eventId,rMin,rMax,pad,cardId+'_eBib',cardId+'_eBibHint',cardId+'_eBibAvailPanel');
-}
+window.checkBibExhaustedEdit=async function(eventId,cardId){ setEditBibCtx(eventId,cardId); await checkBibExhaustedFor(cardId+'_eBib',cardId+'_eBibHint'); };
+window.toggleAvailableBibsEdit=async function(eventId,cardId){ setEditBibCtx(eventId,cardId); await openAvailBibPanel(cardId+'_eBib',cardId+'_eBibHint',cardId+'_eBibAvailPanel'); };
+window.checkEditBibAvailable=async function(eventId,entryDocId,cardId){
+  setEditBibCtx(eventId,cardId);
+  const el=document.getElementById(cardId+'_eBib');
+  await checkBibInput(cardId+'_eBib',cardId+'_eBibHint',el?(el.dataset.oldBib||''):'');
+};
 
 // Turnstile 明確渲染：等api.js真的載入完成才呼叫render()，並記住widgetId供之後reset用。
 // 每次報名表單重新建立（換活動/換組別重繪）都要重新render一次，因為舊的container已經被換掉了。
@@ -1585,31 +1512,15 @@ window.submitSignup=async function(){
 
   // 自選號碼（若開放且有填）
   const customBibEl=document.getElementById('suBib');
-  const customBibRaw=customBibEl?customBibEl.value.trim():'';
+  // 欄位沒顯示（沒開放自選、固定沿用、號碼使用會員編號）就不送：可能是換組別前留下的值
+  const customBibRaw=(customBibEl&&document.getElementById('suBibRow')?.style.display!=='none')?customBibEl.value.trim():'';
   let customBib='';
+  // 填了號碼：送出前問伺服器號碼池確認一次（跟送出報名同一套判斷；失焦檢查只是輔助）
   if(customBibRaw){
-    const n=bibNumOf(customBibRaw,'suBib');
-    if(isNaN(n)||n<1){showToast('號碼請填數字（前後綴會自動加上）','error');return;}
-    const {pad,min:effMin,max:effMax}=getEffBibSettings(g);
-    if(n!==(suBibPre.own||0)&&(n<effMin||n>effMax)){
-      showToast('號碼須在 '+effMin+'～'+effMax+' 之間','error');
-      if(customBibEl)customBibEl.style.borderColor='var(--red)';
-      return;
-    }
-    customBib=bibStr(n,pad,'suBib');
-  }
-  // 若填了號碼，先做最終重複確認
-  if(customBib){
-    const info=await getUsedBibSetFor(curSignupEvent.id,true);
-    const bc=getEffBibSettings(g);
-    const prob=bibNumProblem(info,bibNumOf(customBib,'suBib'),bc.min,bc.max,'',suBibPre.own||0);
-    if(prob){
-      showToast('號碼 '+customBib+'：'+prob,'error');
-      if(customBibEl){customBibEl.style.borderColor='var(--red)';}
-      // 偵測到衝突代表現在可能有很多人同時在搶號碼，快取可能已經整批過期，直接作廢，下次重新完整查詢
-      delete availBibSetByEvent[curSignupEvent.id];
-      return;
-    }
+    setSignupBibCtx();
+    const r=await checkBibInput('suBib','suBibHint','');
+    if(!r.ok){ showToast('號碼：'+r.message,'error'); return; }
+    customBib=r.bib||customBibRaw;
   }
 
   try{
@@ -1623,7 +1534,7 @@ window.submitSignup=async function(){
     // ══════════════════════════════════════════════════════════
     // 送出前確認資料
     btn.textContent='送出報名'; btn.disabled=false;
-    const okGo=await confirmBeforeSubmit([{rows:[['活動',curSignupEvent.name||''],['組別',g?.name||''],['姓名',name],['性別',gender],['生日',birthday],['手機',phone],['Email',email],['身分證',idNumber],[memberRule.label,memberNo],['號碼',customBib],['備註',note]].concat(cfConfirmRows(curSignupCustomFields,customData))}]);
+    const okGo=await confirmBeforeSubmit([{rows:[['活動',curSignupEvent.name||''],['組別',g?.name||''],['姓名',name],['性別',gender],['生日',birthday],['手機',phone],['Email',email],['身分證',idNumber],[memberRule.label,memberNo],['號碼',getEffBibSettings(g).fromMember?memberNo.normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase():customBib],['備註',note]].concat(cfConfirmRows(curSignupCustomFields,customData))}]);
     if(!okGo) return;
     btn.textContent='送出中...'; btn.disabled=true;
     if(!currentTurnstileToken){showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error');btn.textContent='送出報名';btn.disabled=false;return;}
@@ -1659,7 +1570,6 @@ window.submitSignup=async function(){
     // 會直接落到下面的 catch 顯示錯誤訊息
     // 這次報名可能用掉一個號碼（自選或自動配號），「查看可用號碼」的快取要清掉，
     // 不然剛用掉的號碼要重整頁面才會反映
-    delete availBibSetByEvent[curSignupEvent.id];
     showSignupSuccess({uniqueId:res.uniqueId,name,gender,group:g?.name||group,bibNumber:res.bibNumber,eventName:curSignupEvent.name,eventDate:curSignupEvent.date});
   }catch(e){
     showToast('報名失敗：'+e.message,'error');
@@ -1827,7 +1737,7 @@ function mfRefreshBib(st,k,g){
   const bc=getEffBibSettings(g,st.ev);
   const key=(g?g.id:'')+'|'+bc.prefix+'|'+bc.suffix;
   setBibAffix(P+'bib',bc);
-  row.style.display=(bc.allowCustomBib&&bibModeOf(st.ev)!=='fixed')?'':'none';
+  row.style.display=(!bc.fromMember&&bc.allowCustomBib&&bibModeOf(st.ev)!=='fixed')?'':'none';
   applyMfBibPre(st,k,bc);
   if(row.dataset.key===key) return;
   row.dataset.key=key;
@@ -1839,8 +1749,10 @@ function mfRefreshBib(st,k,g){
 function applyMfBibPre(st,k,bc){
   const P=st.ns+k+'_'; st.pre=st.pre||{}; const pre=st.pre[k]||newBibPre();
   const row=document.getElementById(P+'bibRow');
-  if(row&&row.style.display!=='none') fillBibInput(P+'bib',pre,bc,bibModeOf(st.ev)==='prefer'&&st.ev.bibOldCanChange!==true);
-  const info=document.getElementById(P+'bibInfo'); if(info) info.innerHTML=bibPreInfoHtml(st.ev,pre,bc,P+'bib');
+  if(bc.fromMember){ const info=document.getElementById(P+'bibInfo'); if(info) info.innerHTML=fromMemberInfoHtml(bc.fromMember); return; }
+  const gid=document.getElementById(P+'group')?.value||'';
+  if(row&&row.style.display!=='none') fillBibInput(P+'bib',pre,gid,bibModeOf(st.ev)==='prefer'&&st.ev.bibOldCanChange!==true);
+  const info=document.getElementById(P+'bibInfo'); if(info) info.innerHTML=bibPreInfoHtml(st.ev,pre,gid);
 }
 function mfPersonProfile(ns,k){ return bibLookupProfile(f=>(document.getElementById(ns+k+'_'+f)?.value||'').trim()); }
 window.scheduleMfBibLookup=function(ns,k){
@@ -1859,7 +1771,8 @@ window.mfToggleBibs=async function(ns,k){
   const st=MF[ns]; if(!st) return;
   const g=st.groupMap[document.getElementById(ns+k+'_group')?.value||''];
   const bc=getEffBibSettings(g,st.ev);
-  await openAvailBibPanel(st.ev.id,bc.min,bc.max,bc.pad,ns+k+'_bib',ns+k+'_bibHint',ns+k+'_bibPanel');
+  bibCtxByInput[ns+k+'_bib']={eventId:st.ev.id,groupId:document.getElementById(ns+k+'_group')?.value||'',own:((st.pre||{})[k]||{}).own||''};
+  await openAvailBibPanel(ns+k+'_bib',ns+k+'_bibHint',ns+k+'_bibPanel');
 };
 function mfAge(st, birthday){ return cfAgeFrom(birthday, st.ev.date||''); }
 function mfNeedsParental(st, k){
@@ -1943,10 +1856,9 @@ function mfRead(st){
       // 自選號碼（有開放時才有欄位；留空＝自動配號）
       const bibRaw=v('bib');
       if(bibRaw&&document.getElementById(P+'bibRow')?.style.display!=='none'){
+        // 號碼能不能用由伺服器號碼池判斷（送出時）；這裡只組成完整號碼給確認視窗看
         const bc=getEffBibSettings(g,st.ev); const n=bibNumOf(bibRaw,P+'bib');
         if(isNaN(n)||n<1) return {error:who+'號碼請填數字（前後綴會自動加上）'};
-        const own=((st.pre||{})[k]||{}).own||0;
-        if(n!==own&&(n<bc.min||n>bc.max)) return {error:who+'號碼須在 '+bc.min+'～'+bc.max+' 之間'};
         p.customBib=bibStr(n,bc.pad,P+'bib');
       }
     }
@@ -1990,7 +1902,7 @@ function mfConfirmSections(st,pl){
   const out=[{title:'填表人',rows:[['姓名',pl.submitter.name],['手機',pl.submitter.phone],['Email',pl.submitter.email||'']]}];
   const sh=cfConfirmRows(mfSharedFields(st),pl.shared);
   if(sh.length) out.push({title:'共同填寫',rows:sh});
-  pl.persons.forEach((p,i)=>out.push({title:'第 '+(i+1)+' 位',rows:[['組別',st.groupMap[p.groupId]?.name||''],['姓名',p.name],['性別',p.gender],['生日',p.birthday],['手機',p.phone],['Email',p.email],['身分證',p.idNumber],[memberRuleR(st.ev,st.groupMap[p.groupId]).label,p.memberNo||''],['號碼',p.customBib||''],['備註',p.note||'']].concat(cfConfirmRows(mfPersonFields(st),p.customData))}));
+  pl.persons.forEach((p,i)=>out.push({title:'第 '+(i+1)+' 位',rows:[['組別',st.groupMap[p.groupId]?.name||''],['姓名',p.name],['性別',p.gender],['生日',p.birthday],['手機',p.phone],['Email',p.email],['身分證',p.idNumber],[memberRuleR(st.ev,st.groupMap[p.groupId]).label,p.memberNo||''],['號碼',(!st.edit&&getEffBibSettings(st.groupMap[p.groupId],st.ev).fromMember)?String(p.memberNo||'').normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase():(p.customBib||'')],['備註',p.note||'']].concat(cfConfirmRows(mfPersonFields(st),p.customData))}));
   return out;
 }
 window.mfSubmitSignup=async function(ns){
@@ -2022,7 +1934,6 @@ window.mfSubmitSignup=async function(ns){
       const fresh=await waitForFreshTurnstileToken();
       res=(await fn({...payload, turnstileToken:fresh, identities})).data;
     }
-    delete availBibSetByEvent[curSignupEvent.id];
     showBatchSuccess(res, r.payload.submitter);
   }catch(e){
     showToast('報名失敗：'+e.message,'error');
@@ -2519,48 +2430,6 @@ window.requestCancelEntry=async function(eventId, entryDocId, cardId){
   }
 }
 
-// ── 修改號碼時的即時重複檢查 ──
-window.checkEditBibAvailable=async function(eventId, entryDocId, cardId){
-  const el=document.getElementById(cardId+'_eBib');
-  const hint=document.getElementById(cardId+'_eBibHint');
-  if(!el||!hint)return;
-  const bib=el.value.trim();
-  if(!bib){hint.textContent='';el.style.borderColor='';return;}
-  if(bib===(el.dataset.oldBib||'')){hint.textContent='';el.style.borderColor='';return;} // 沒有要換
-  const n=bibNumOf(bib,cardId+'_eBib');
-  if(isNaN(n)||n<1){
-    el.style.borderColor='var(--red)';
-    hint.innerHTML='<span style="color:var(--red)">❌ 請填數字（前後綴會自動加上）</span>';
-    return;
-  }
-  // 範圍檢查（從 hidden input 讀取）——如果填的其實跟原本一樣（沒有要換），不套用範圍限制，
-  // 理由跟送出驗證一致：範圍後來被調整過的話，參加者還是要能保留自己原本的號碼
-  const rangeEl=document.getElementById(cardId+'_bibRange');
-  const pad=rangeEl?parseInt(rangeEl.dataset.pad)||3:3;
-  const padded=bibStr(n,pad,cardId+'_eBib');
-  const oldBib=rangeEl?(rangeEl.dataset.oldBib||''):'';
-  if(padded!==oldBib){
-    const rMin=rangeEl?parseInt(rangeEl.dataset.min)||0:0;
-    const rMax=rangeEl?parseInt(rangeEl.dataset.max)||0:0;
-    const {min:effMin,max:effMax}=bibEffRange(rMin,rMax,pad);
-    if(n<effMin||n>effMax){
-      el.style.borderColor='var(--red)';
-      hint.innerHTML='<span style="color:var(--red)">❌ 號碼須在 '+effMin+'～'+effMax+' 之間</span>';
-      return;
-    }
-  }
-  const info=await getUsedBibSetFor(eventId,true);
-  const {min:eMin,max:eMax}=bibEffRange(rangeEl?parseInt(rangeEl.dataset.min)||0:0,rangeEl?parseInt(rangeEl.dataset.max)||0:0,pad);
-  const prob=bibNumProblem(info,n,eMin,eMax,entryDocId,0);
-  if(prob){
-    el.style.borderColor='var(--red)';
-    hint.innerHTML='<span style="color:var(--red)">❌ '+esc(prob)+'</span>';
-  }else{
-    el.style.borderColor='var(--green)';
-    hint.innerHTML='<span style="color:var(--green)">✅ 號碼 '+padded+' 可使用</span>';
-  }
-}
-
 // ── 修改報名資料：直接展開（查詢時已驗證身份）──
 window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   const box=document.getElementById(cardId+'_edit');
@@ -2682,7 +2551,8 @@ window.showEditForm=async function(eventId,entryDocId,uniqueId,cardId){
   //（與之後改生日/組別時走同一條判斷路徑，不會有初始不判斷的問題）
   updateEditParentalBlock(cardId,gMapJson,evDate);
   updateEditCustomFieldsVisibility(cardId);
-  const BIB_KEYS=['bibOverride','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax','bibNote','bibPrefix','bibSuffix'];
+  // bibFromMember 和報名限制欄位：判斷「號碼使用會員編號」要用
+  const BIB_KEYS=['bibOverride','bibFromMember','limitOverride','memberMode','memberLabel','memberListId','genderLimit','ageMin','ageMax','parentalAge','inviteCodeHash','allowCustomBib','allowBibChange','bibRangeMin','bibRangeMax','customBibRangeMin','customBibRangeMax','bibNote','bibPrefix','bibSuffix'];
   const pick=(o,extra)=>Object.fromEntries(BIB_KEYS.concat(extra||[]).filter(k=>o&&o[k]!==undefined).map(k=>[k,o[k]]));
   box.dataset.bibctx=JSON.stringify({ev:pick(evDoc.data(),['bibPadLength','bibMode','seriesId']),groups:Object.fromEntries(groupList.map(g=>[g.id,pick(g)])),
     regOpen:isRunnerRegOpen(evDoc.data(),0),oldBib:e.bibNumber||'',uid:e.uniqueId||'',eventId,entryDocId});
@@ -2704,6 +2574,10 @@ window.renderEditBibField=function(cardId){
   if(intro)intro.textContent=canChange?'可修改以下資料，包含參加者號碼。':'可修改以下資料，ID 與編號無法變更。';
   const cur=document.getElementById(cardId+'_eBib');
   const val=cur?cur.value:(c.oldBib||'');
+  if(cfg.fromMember){
+    if(intro)intro.textContent='可修改以下資料，ID 與編號無法直接變更。';
+    wrap.innerHTML='<div style="margin:0 0 12px">'+fromMemberInfoHtml(cfg.fromMember,true)+'</div>'; return;
+  }
   if(!canChange){wrap.innerHTML='';return;}
   const ev=c.eventId, en=c.entryDocId;
   wrap.innerHTML='<div class="input-group"><label>參加者號碼（號碼須在 '+cfg.min+'～'+cfg.max+' 之間'+((cfg.prefix||cfg.suffix)?'，可只填數字':'')+'，留空可重新自動配號）</label>'
@@ -2816,37 +2690,11 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
   if(newBibRaw&&rangeEl&&newBibRaw===(rangeEl.dataset.oldBib||'')){
     // 原封不動＝沒有要換號碼
   }else if(newBibRaw){
-    const n=bibNumOf(newBibRaw,cardId+'_eBib');
-    if(isNaN(n)||n<1){showToast('號碼請填數字（前後綴會自動加上）','error');return;}
-    const pad=rangeEl?parseInt(rangeEl.dataset.pad)||3:3;
-    const padded=bibStr(n,pad,cardId+'_eBib');
-    const oldBib=rangeEl?(rangeEl.dataset.oldBib||''):'';
-    // 只有「真的要換一個不一樣的號碼」才套用範圍限制——範圍後來被調整過的話，
-    // 參加者還是要能保留自己原本的號碼，不能因此被擋下無法送出
-    if(padded!==oldBib){
-      const rMin=rangeEl?parseInt(rangeEl.dataset.min)||0:0;
-      const rMax=rangeEl?parseInt(rangeEl.dataset.max)||0:0;
-      const {min:effMin,max:effMax}=bibEffRange(rMin,rMax,pad);
-      if(n<effMin||n>effMax){
-        showToast('號碼須在 '+effMin+'～'+effMax+' 之間','error');
-        if(bibEl)bibEl.style.borderColor='var(--red)';
-        return;
-      }
-    }
-    // 真的要換號碼的話，送出前再確認一次沒被搶走（跟報名表單同一套邏輯，失焦檢查只是輔助不是保證）
-    if(padded!==oldBib){
-      const info=await getUsedBibSetFor(eventId,true);
-      const {min:eMin,max:eMax}=bibEffRange(rangeEl?parseInt(rangeEl.dataset.min)||0:0,rangeEl?parseInt(rangeEl.dataset.max)||0:0,pad);
-      const prob=bibNumProblem(info,n,eMin,eMax,entryDocId,0);
-      if(prob){
-        showToast('號碼 '+padded+'：'+prob,'error');
-        if(bibEl)bibEl.style.borderColor='var(--red)';
-        // 偵測到衝突代表現在可能有很多人同時在搶號碼，快取可能已經整批過期，直接作廢，下次重新完整查詢
-        delete availBibSetByEvent[eventId];
-        return;
-      }
-    }
-    newBib=padded;
+    // 要換號碼：送出前問伺服器號碼池確認一次（失焦檢查只是輔助不是保證）
+    setEditBibCtx(eventId,cardId);
+    const r=await checkBibInput(cardId+'_eBib',cardId+'_eBibHint',rangeEl?(rangeEl.dataset.oldBib||''):'');
+    if(!r.ok){ showToast('號碼：'+r.message,'error'); return; }
+    newBib=r.keep?'':(r.bib||newBibRaw);
   }
   if(!name){showToast('姓名為必填','error');return;}
   if(!gender){showToast('性別為必選','error');return;}
@@ -2960,7 +2808,6 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
     statusCred=res.updatedCredentials||statusCred;
     const cached=statusCache[entryDocId];
     if(cached){
-      const bibChanged=!!res.newBib&&res.newBib!==cached.entry.bibNumber;
       Object.assign(cached.profile,{name,gender,birthday,phone,email,idNumber,note});
       const groupName=document.getElementById(cardId+'_eGroup')?.selectedOptions?.[0]?.textContent||cached.entry.group;
       Object.assign(cached.entry,{group:groupName,groupId,customData,memberNo:memberNo.normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase(),bibNumber:res.newBib||cached.entry.bibNumber});
@@ -2968,7 +2815,6 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
       // 不然畫面（含 QR Code 裡的編號）看起來會像沒改到（資料庫其實已經改好了）
       renderStatusInfo(cardId, entryDocId);
       // 編號真的有變動的話，「查看可用號碼」的快取要清掉，不然剛用掉/剛空出來的號碼要重整頁面才會反映
-      if(bibChanged) delete availBibSetByEvent[eventId];
     }
     showToast('已儲存修改');
     document.getElementById(cardId+'_edit').innerHTML='<div class="csv-hint">✅ 修改已儲存</div>';
