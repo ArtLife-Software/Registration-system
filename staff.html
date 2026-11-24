@@ -126,6 +126,8 @@ const SYS_RE=/^[a-z0-9][a-z0-9-]{1,29}$/;
 // ── 系列（網址 &g=系列ID：只顯示這個系列的活動）──
 // 活動選單依系列分組顯示；系列不存在（例如已刪除）就不篩選，顯示全部活動。
 const SERIES_FILTER=(new URLSearchParams(location.search).get('g')||'').trim();
+// 單一活動（網址 &e=活動ID）：只顯示這個活動，跟 member.html 一樣
+const EVENT_FILTER=(new URLSearchParams(location.search).get('e')||'').trim().slice(0,100);
 let seriesMapP=null;
 function loadSeriesMap(){
   if(!seriesMapP){
@@ -138,6 +140,7 @@ function loadSeriesMap(){
 // 簡易表單（type:'simple'）有自己的填表頁 form.html，不出現在這裡的活動選單
 async function filterBySeries(list){
   list=(list||[]).filter(ev=>ev.type!=='simple');
+  if(EVENT_FILTER) return list.filter(ev=>ev.id===EVENT_FILTER);
   if(!SERIES_FILTER) return list;
   const sm=await loadSeriesMap();
   if(!sm[SERIES_FILTER]) return list;

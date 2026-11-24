@@ -67,6 +67,7 @@ textarea.input{resize:vertical;}
     <img id="evBanner" class="banner" style="display:none" alt="">
     <div id="evBannerLink" class="muted" style="display:none;margin-top:4px"></div>
   </div>
+  <a id="backLink" href="#" style="display:none;font-size:.85rem;color:var(--accent);text-decoration:none">← 其他活動</a>
   <div id="fatal" class="card" style="display:none"></div>
   <div id="main" style="display:none">
     <div class="tabs" id="tabs">
@@ -116,7 +117,8 @@ textarea.input{resize:vertical;}
 <script src="cf.js?v=1.8.6"></script>
 <script>
 // ════════════════════════════════════════════════════════════════
-// 簡易表單的填表頁：form.html?s=系統代碼&e=活動ID
+// 簡易表單的填表畫面：form.html?s=系統代碼&e=活動ID（&g=系列ID：「其他活動」回到這個系列）
+// 對外分享的是報名網址 member.html?s=…&e=…（或系統、系列的報名網址），選到簡易表單時由 member.html 轉來這裡
 // 填表 → 確認 → 送出（拿到修改碼）；用修改碼查詢、修改、取消；公開名單與統計（活動有開才顯示）。
 // 欄位畫面、顯示條件、驗證都用 cf.js（跟報名頁同一套）；送出、修改、名額、候補都由 Cloud Function simpleForm 處理。
 // 這段程式不直接碰 Firebase：最下面的 module 準備好 api（讀活動、呼叫 simpleForm、Turnstile）後呼叫 SF.start(api)。
@@ -360,6 +362,8 @@ const SF=(function(){
 
   async function start(a){
     api=a; sys=a.sys; eid=a.eid;
+    // 「其他活動」：回到報名網址的活動清單（從系列網址進來的回到同一個系列）
+    if(sys){ $('backLink').href='member.html?s='+encodeURIComponent(sys)+(a.series?'&g='+encodeURIComponent(a.series):''); $('backLink').style.display='inline-block'; }
     if(!sys||!eid){ fatal('網址不完整，請確認連結是否正確（需要 ?s=系統代碼&e=活動代碼）。'); return; }
     try{ ev=await api.getEvent(); }catch(e){ fatal('讀取失敗：'+errMsg(e)); return; }
     if(!ev){ fatal('找不到這份表單，可能已經被刪除，請跟主辦單位確認連結。'); return; }
@@ -457,7 +461,7 @@ function resetToken(id) {
 const fn = httpsCallable(functions, 'simpleForm');
 
 window.SF.start({
-  sys: /^[a-z0-9][a-z0-9-]{1,29}$/.test(SYS) ? SYS : '', eid: EID.slice(0, 100),
+  sys: /^[a-z0-9][a-z0-9-]{1,29}$/.test(SYS) ? SYS : '', eid: EID.slice(0, 100), series: (P.get('g') || '').trim().slice(0, 100),
   getEvent: async () => { await authReady; const s = await getDoc(doc(db, 'systems', SYS, 'events', EID)); return s.exists() ? s.data() : null; },
   call: async (data) => { await authReady; return (await fn({ ...data, systemId: SYS, eventId: EID })).data; },
   token, resetToken, renderToken,

@@ -488,11 +488,6 @@ function cfOrderProblem(fields){
   }
   return '';
 }
-// 簡易表單的表單設定有沒有用到某個欄位
-function evUsesField(ev, id){
-  const sm=(ev&&ev.simple)||{};
-  return ((sm.unique||{}).fields||[]).includes(id)||(sm.quota||{}).by===id||((sm.public||{}).listFields||[]).includes(id);
-}
 // 修改來源欄位後，檢查依賴它的條件是否還成立（類型、選項）
 function cfDependentsProblem(fields, field){
   if(field.type!=='number'){ const g=fields.find(x=>x.optQuotaBy===field.id); if(g) return '「'+g.label+'」的選項名額以這個欄位加總，改類型前請先修改「'+g.label+'」'; }
@@ -937,7 +932,8 @@ async function loadEvents() {
     btns+='<button class="btn btn-sm btn-ghost" onclick="manageGroups(\''+ev.id+'\',\''+escJs(ev.name)+'\')">組別</button> ';
     btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'runner\')">參加者表單</button> ';
     btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'staff\')">工作人員表單</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="openCertEditor(\''+ev.id+'\')">獎狀</button>';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="openCertEditor(\''+ev.id+'\')">獎狀</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="copyEventLink(\''+ev.id+'\')">複製報名網址</button>';
     const pt=periodText(ev);
     return '<tr>'
       +(withPeriod?'<td style="white-space:nowrap;color:var(--muted)">'+esc(pt||'-')+'</td>':'')
@@ -945,7 +941,7 @@ async function loadEvents() {
       +'<td>'+statusHtml+'</td>'
       +'<td style="white-space:nowrap">'+btns+'</td></tr>';
   }
-  // 簡易表單的一列：類型徽章、正取／候補數、填表開關、表單欄位、回覆、複製連結
+  // 簡易表單的一列：類型徽章、正取／候補數、填表開關、表單欄位、報名管理、複製連結
   async function simpleRowHtml(ev, withPeriod){
     let counts='';
     try{
@@ -958,8 +954,8 @@ async function loadEvents() {
     let btns=(!ev.registrationOpen?'<button class="btn btn-sm btn-green" onclick="toggleRegistration(\''+ev.id+'\',true)">開放填表</button> ':'<button class="btn btn-sm btn-danger" onclick="toggleRegistration(\''+ev.id+'\',false)">關閉填表</button> ');
     btns+='<button class="btn btn-sm btn-ghost" onclick="editEvent(\''+ev.id+'\')">編輯</button> ';
     btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'runner\')">表單欄位</button> ';
-    btns+='<button class="btn btn-sm btn-primary" onclick="openResponses(\''+ev.id+'\')">回覆</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="copyFormLink(\''+ev.id+'\')">複製填表連結</button>';
+    btns+='<button class="btn btn-sm btn-primary" onclick="openResponses(\''+ev.id+'\')">報名管理</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="copyEventLink(\''+ev.id+'\')">複製報名網址</button>';
     const pt=periodText(ev);
     return '<tr>'
       +(withPeriod?'<td style="white-space:nowrap;color:var(--muted)">'+esc(pt||'-')+'</td>':'')
@@ -1062,7 +1058,7 @@ function bucketEventsBySeries(events){
   return [...buckets, none];
 }
 // 後台各頁的活動下拉選單：依系列分組（<optgroup>）
-// 簡易表單（type:'simple'）用自己的「回覆」畫面，不出現在報名管理、工作人員、統計的活動選單
+// 簡易表單（type:'simple'）用自己的「報名管理」畫面，不出現在報名管理、工作人員、統計的活動選單
 function eventOptionsHtml(events){
   events=(events||[]).filter(ev=>ev.type!=='simple');
   const label=ev=>esc((ev.name||'')+(ev.date?' ('+ev.date+')':''));
@@ -1334,6 +1330,7 @@ const SIMPLE_TEMPLATES={
 let evSimpleFields=[];  // 表單設定用的欄位清單（編輯＝活動目前的欄位；新增＝範本的欄位）
 let evOrigType='';      // 開啟編輯時的類型
 let evOrigSimple=null;  // 開啟編輯時的 simple 設定
+let evTplSimple=null;   // 新增時選的範本設定（含不能重複、名單欄位）
 const cfNewId=()=>'cf_'+Date.now()+'_'+Math.floor(Math.random()*100000);
 // 範本 → 欄位（產生 id）與設定（範本裡用欄位位置表示，換成 id）
 function buildTemplate(key){
@@ -1347,55 +1344,49 @@ function buildTemplate(key){
   if(sm.public&&sm.public.listFields) sm.public.listFields=sm.public.listFields.map(idAt);
   return {fields, simple:sm};
 }
-const SM_SECRET_FORMATS=['phone','email','idno'];
 function renderSimpleSettings(sm){
   sm=sm||{}; const u=sm.unique||{}, q=sm.quota||{}, w=sm.waitlist||{}, pb=sm.public||{};
   const data=evSimpleFields.filter(f=>f.type!=='section');
-  const chk=(cls,f,on,dis)=>'<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem'+(dis?';opacity:.5':'')+'"><input type="checkbox" class="'+cls+'" value="'+esc(f.id)+'"'+(on?' checked':'')+(dis?' disabled':'')+'> '+esc(f.label)+'</label>';
-  const none='<span style="color:var(--muted);font-size:.82rem">（還沒有欄位）</span>';
+  const names=ids=>(ids||[]).map(id=>(data.find(f=>f.id===id)||{}).label).filter(Boolean);
+  const where='<span style="color:var(--muted);font-size:.78rem">（在「表單欄位」編輯欄位時勾選）</span>';
   document.getElementById('evSmEdit').value=sm.edit==='none'?'none':'code';
-  const uf=data.filter(f=>['text','number','date','time','select'].includes(f.type));
-  document.getElementById('evSmUniqBox').innerHTML=uf.length?uf.map(f=>chk('evSmUniq',f,(u.fields||[]).includes(f.id))).join(''):none;
-  document.getElementById('evSmUniqMode').value=u.mode==='each'?'each':'combo';
+  const un=names(u.fields);
+  document.getElementById('evSmUniqInfo').innerHTML=(un.length?esc(un.join(un.length>1&&u.mode==='each'?'、':'＋'))+(un.length>1?(u.mode==='each'?'（各自不能重複）':'（組合不能重複）'):''):'不限制')+' '+where;
+  const pn=names(pb.listFields);
+  document.getElementById('evSmPubInfo').innerHTML=(pn.length?esc(pn.join('、')):'<span style="color:var(--red)">還沒有勾選欄位，名單只會顯示編號</span>')+' '+where;
   document.getElementById('evSmQuota').value=q.total>0?q.total:'';
   const nums=data.filter(f=>f.type==='number');
   const by=document.getElementById('evSmQuotaBy');
-  by.innerHTML='<option value="count">以筆數計（一筆回覆＝1）</option>'+nums.map(f=>'<option value="'+esc(f.id)+'">以「'+esc(f.label)+'」加總計</option>').join('');
+  by.innerHTML='<option value="count">以筆數計（填一筆＝1）</option>'+nums.map(f=>'<option value="'+esc(f.id)+'">以「'+esc(f.label)+'」加總計</option>').join('');
   by.value=nums.some(f=>f.id===q.by)?q.by:'count';
   document.getElementById('evSmWait').checked=!!w.enabled;
   document.getElementById('evSmWaitMax').value=w.max>0?w.max:'';
   document.getElementById('evSmWaitMaxRow').style.display=w.enabled?'':'none';
   document.getElementById('evSmPubList').checked=!!pb.list;
-  document.getElementById('evSmPubFieldsBox').innerHTML=data.length?data.map(f=>chk('evSmPubF',f,(pb.listFields||[]).includes(f.id),SM_SECRET_FORMATS.includes((f.rules||{}).format))).join(''):none;
   document.getElementById('evSmNumbering').value=pb.numbering==='fill'?'fill':'compact';
   document.getElementById('evSmPubStats').checked=!!pb.stats;
   document.getElementById('evSmPubWhen').value=pb.when==='afterSubmit'?'afterSubmit':'always';
-  onEvSmPubChange(); onEvSmUniqChange();
+  onEvSmPubChange();
 }
 window.onEvSmPubChange=function(){
   const list=document.getElementById('evSmPubList').checked, stats=document.getElementById('evSmPubStats').checked;
   document.getElementById('evSmPubListRow').style.display=list?'':'none';
   document.getElementById('evSmPubWhenRow').style.display=(list||stats)?'':'none';
 };
-function onEvSmUniqChange(){ document.getElementById('evSmUniqModeRow').style.display=document.querySelectorAll('.evSmUniq:checked').length>1?'':'none'; }
-document.addEventListener('change',e=>{ if(e.target&&e.target.classList&&e.target.classList.contains('evSmUniq')) onEvSmUniqChange(); });
 function readSimpleSettings(){
-  const ids=cls=>[...document.querySelectorAll('.'+cls+':checked')].map(el=>el.value);
-  const uniq=ids('evSmUniq'); if(uniq.length>2) return {error:'不能重複的欄位最多兩個'};
   const qRaw=document.getElementById('evSmQuota').value.trim(), total=qRaw===''?0:Number(qRaw);
   if(qRaw!==''&&!(Number.isInteger(total)&&total>0)) return {error:'總名額要是 1 以上的整數，或留空'};
   const wRaw=document.getElementById('evSmWaitMax').value.trim(), wmax=wRaw===''?0:Number(wRaw);
   if(wRaw!==''&&!(Number.isInteger(wmax)&&wmax>0)) return {error:'候補上限要是 1 以上的整數，或留空'};
   const wait=document.getElementById('evSmWait').checked;
   if(wait&&!total) return {error:'開放候補要先設定總名額'};
-  const list=document.getElementById('evSmPubList').checked, listFields=ids('evSmPubF');
-  if(list&&!listFields.length) return {error:'公開名單：請至少勾選一個要顯示的欄位'};
+  // 不能重複的欄位、名單顯示的欄位在「表單欄位」設定，這裡不讀不寫（存檔時也不會蓋掉）
+  const list=document.getElementById('evSmPubList').checked;
   return {simple:{
     edit:document.getElementById('evSmEdit').value==='none'?'none':'code',
-    unique:{fields:uniq, mode:document.getElementById('evSmUniqMode').value==='each'?'each':'combo'},
     quota:{total, by:document.getElementById('evSmQuotaBy').value||'count'},
     waitlist:{enabled:wait, max:wmax},
-    public:{list, listFields, stats:document.getElementById('evSmPubStats').checked,
+    public:{list, stats:document.getElementById('evSmPubStats').checked,
       when:document.getElementById('evSmPubWhen').value==='afterSubmit'?'afterSubmit':'always',
       numbering:document.getElementById('evSmNumbering').value==='fill'?'fill':'compact'},
   }};
@@ -1410,14 +1401,14 @@ window.onEvTypeChange=function(){
   const t=document.getElementById('evSec1Title'), h=document.getElementById('evSec1Hint');
   if(SEC1_STD.hint===null) SEC1_STD.hint=h.innerHTML;
   t.textContent=simple?'🎫 1. 填表時間':SEC1_STD.title;
-  h.innerHTML=simple?'手動開關「開放填表」ON 時一律開放。手動開關 OFF 時，要設定填表期間（開始、結束至少填一個），在期間內才開放。<strong>沒有設定填表期間＝不開放。</strong>修改、取消也只在開放期間可以；查看自己的回覆隨時可以。':SEC1_STD.hint;
+  h.innerHTML=simple?'手動開關「開放填表」ON 時一律開放。手動開關 OFF 時，要設定填表期間（開始、結束至少填一個），在期間內才開放。<strong>沒有設定填表期間＝不開放。</strong>修改、取消也只在開放期間可以；查看自己填的資料隨時可以。':SEC1_STD.hint;
   document.getElementById('evTypeHint').textContent=simple
     ?'不填基本資料、跟參加者主檔無關，整張表單由自訂欄位組成。填表網址是 form.html，送出後給修改碼。'
     :'';
 };
 window.onEvTemplateChange=function(){
   const b=buildTemplate(document.getElementById('evTemplate').value);
-  evSimpleFields=b.fields; renderSimpleSettings(b.simple);
+  evSimpleFields=b.fields; evTplSimple=b.simple; renderSimpleSettings(b.simple);
 };
 function resetEvType(ev, locked){
   const sel=document.getElementById('evType');
@@ -1426,7 +1417,7 @@ function resetEvType(ev, locked){
   tpl.innerHTML=Object.entries(SIMPLE_TEMPLATES).map(([k,t])=>'<option value="'+k+'">'+esc(t.label)+'</option>').join('');
   tpl.value='blank';
   evOrigType=sel.value; evOrigSimple=ev&&ev.simple?JSON.parse(JSON.stringify(ev.simple)):null;
-  evSimpleFields=(ev&&Array.isArray(ev.customFields))?ev.customFields:[];
+  evSimpleFields=(ev&&Array.isArray(ev.customFields))?ev.customFields:[]; evTplSimple=null;
   renderSimpleSettings(ev&&ev.simple||{});
   onEvTypeChange();
   if(locked) document.getElementById('evTypeHint').textContent+=(document.getElementById('evTypeHint').textContent?' ':'')+'已經有人報名或填表，不能改類型。';
@@ -1545,7 +1536,7 @@ const EVENT_SUBCOLLECTIONS=[
   {key:'runners',label:'報名記錄'},{key:'staff',label:'工作人員報名'},{key:'groups',label:'組別'},
   {key:'checkins',label:'報到記錄'},{key:'bibs',label:'號碼標記'},{key:'settings',label:'獎狀設定'},{key:'batches',label:'多人報名批次'},{key:'staffBatches',label:'工作人員多人報名批次'},{key:'bibRegistry',label:'號碼登記表'},
   {key:'memberNos',label:'會員編號使用紀錄'},
-  {key:'responses',label:'簡易表單回覆'},{key:'simpleState',label:'簡易表單計數'},{key:'uniq',label:'簡易表單不能重複的標記'},{key:'simpleGuard',label:'簡易表單修改碼輸錯紀錄'},
+  {key:'responses',label:'簡易表單報名資料'},{key:'simpleState',label:'簡易表單計數'},{key:'uniq',label:'簡易表單不能重複的標記'},{key:'simpleGuard',label:'簡易表單修改碼輸錯紀錄'},
 ];
 window.deleteEvent=async function(){
   const id=document.getElementById('eventDocId').value; if(!id)return;
@@ -1570,7 +1561,7 @@ window.deleteEvent=async function(){
     // 一個批次最多 500 筆寫入，分批刪除
     const refs=[];
     snaps.forEach(sn=>sn.docs.forEach(d=>refs.push(d.ref)));
-    // 簡易表單回覆底下的修改紀錄
+    // 簡易表單報名資料底下的修改紀錄
     const ri=EVENT_SUBCOLLECTIONS.findIndex(c=>c.key==='responses');
     for(const r of snaps[ri].docs){ (await getDocs(collection(r.ref,'history'))).docs.forEach(h=>refs.push(h.ref)); }
     for(let i=0;i<refs.length;i+=400){
@@ -1799,15 +1790,24 @@ async function saveSimpleEvent(id){
   const seriesFields=readEventSeriesFields();
   if(seriesFields.error){ showToast(seriesFields.error,'error'); return; }
   const sm=readSimpleSettings(); if(sm.error){ showToast(sm.error,'error'); return; }
+  const n=sm.simple;
   const data={ ...seriesFields, type:'simple', name, date:document.getElementById('evDate').value,
     organizer:document.getElementById('evOrganizer').value.trim(),
     registrationStartAt:dtFieldsToTs('evRegStart'), registrationEndAt:dtFieldsToTs('evRegEnd'),
-    simple:sm.simple, updatedAt:serverTimestamp() };
+    updatedAt:serverTimestamp() };
+  if(id){
+    // 只寫這裡管的設定（用欄位路徑），不能重複與名單欄位由「表單欄位」管，不會被蓋掉
+    Object.assign(data,{'simple.edit':n.edit,'simple.quota':n.quota,'simple.waitlist':n.waitlist,
+      'simple.public.list':n.public.list,'simple.public.stats':n.public.stats,'simple.public.when':n.public.when,'simple.public.numbering':n.public.numbering});
+  }else{
+    const t=evTplSimple||{};
+    data.simple={...n, unique:t.unique||{fields:[],mode:'combo'}, public:{...n.public, listFields:(t.public&&t.public.listFields)||[]}};
+  }
   try{
     if(id){
       await updateDoc(doc(db,'systems',SYS,'events',id),data);
       // 名額放大、開了候補：依順序遞補；編號方式改了：依新方式重排名單號碼
-      const o=evOrigSimple||{}, n=sm.simple;
+      const o=evOrigSimple||{};
       const fn=callFn('simpleForm');
       if(((o.public||{}).numbering||'compact')!==n.public.numbering) await fn({action:'recount',eventId:id});
       if(n.waitlist.enabled) await fn({action:'promote',eventId:id}).catch(()=>{});
@@ -1824,14 +1824,17 @@ async function saveSimpleEvent(id){
 }
 
 // ════════════════════════════
-// 簡易表單：複製填表連結、回覆畫面
-// 回覆直接從資料庫讀（只有管理員能讀）；新增、修改、刪除、轉正取等一律呼叫 Cloud Function simpleForm，計數才不會對不上
+// 簡易表單：報名管理畫面
+// 報名資料直接從資料庫讀（只有管理員能讀）；新增、修改、刪除、轉正取等一律呼叫 Cloud Function simpleForm，計數才不會對不上
 // ════════════════════════════
-function formLink(eid){ return sysLink('form.html',SYS)+'&e='+encodeURIComponent(eid); }
-window.copyFormLink=async function(eid){
-  const url=formLink(eid);
-  try{ await navigator.clipboard.writeText(url); showToast('已複製填表連結，可以直接貼到 LINE'); }
-  catch(e){ prompt('請手動複製填表連結：',url); }
+// 報名網址統一三個層級（兩種活動都一樣）：
+//   整個系統 member.html?s=代碼、單一系列 …&g=系列ID、單一活動 …&e=活動ID
+//   簡易表單由 member.html 自動轉到填表畫面 form.html
+function eventLink(eid){ return sysLink('member.html',SYS)+'&e='+encodeURIComponent(eid); }
+window.copyEventLink=async function(eid){
+  const url=eventLink(eid);
+  try{ await navigator.clipboard.writeText(url); showToast('已複製這個活動的報名網址，可以直接貼到 LINE'); }
+  catch(e){ prompt('請手動複製報名網址：',url); }
 };
 let RS=null; // {id, ev, fields, sm, rows, counter, editing}
 const RS_STATUS={active:'正取',waitlist:'候補',cancelled:'已取消'};
@@ -1901,13 +1904,13 @@ function renderResponses(){
       +(r.status==='waitlist'?'<button class="btn btn-sm btn-green" onclick="rsPromote(\''+r.id+'\')">轉正取</button> ':'')
       +(editable(r.status)&&RS.sm.edit!=='none'?'<button class="btn btn-sm btn-ghost" onclick="rsRegen(\''+r.id+'\')">新修改碼</button> ':'')
       +'<button class="btn btn-sm btn-danger" onclick="rsDelete(\''+r.id+'\')">刪除</button></td></tr>').join('')
-    :'<tr><td colspan="'+(data.length+4)+'" class="loading-cell">沒有符合的回覆</td></tr>';
+    :'<tr><td colspan="'+(data.length+4)+'" class="loading-cell">沒有符合的資料</td></tr>';
 }
 window.renderResponses=renderResponses;
 // 新增／編輯表單（共用 cf.js 的欄位畫面與驗證）
 function rsShowForm(r){
   RS.editing=r?r.id:null;
-  document.getElementById('rsFormTitle').textContent=r?'編輯回覆（編號 '+r._no+'）':'新增回覆';
+  document.getElementById('rsFormTitle').textContent=r?'編輯（編號 '+r._no+'）':'新增一筆';
   document.getElementById('rsFieldsBox').innerHTML=mfFieldsHtml(RS.fields,'rsCf_','rsCfRow_',r?r.data||{}:{});
   document.getElementById('rsForce').checked=false;
   document.getElementById('rsForm').style.display='block';
@@ -1941,7 +1944,7 @@ window.rsDelete=async function(rid){
   const r=RS.rows.find(x=>x.id===rid); if(!r) return;
   const fill=(RS.sm.public||{}).numbering==='fill';
   const note=r.status==='active'?(fill?'\n空出的號碼會給下一位正取。':'\n公開名單後面的編號會往前遞補。')+(RS.counter.waitCount?'\n有候補時會自動遞補。':''):'';
-  if(!confirm('刪除這筆回覆（編號 '+(r._no||'-')+'）？刪除後無法復原。'+note)) return;
+  if(!confirm('刪除這筆（編號 '+(r._no||'-')+'）？刪除後無法復原。'+note)) return;
   try{ await callFn('simpleForm')({action:'adminDelete',eventId:RS.id,rids:[rid]}); showToast('已刪除'); await loadResponses(); }
   catch(e){ showToast('刪除失敗：'+e.message,'error'); }
 };
@@ -1951,7 +1954,7 @@ window.rsPromote=async function(rid){
   catch(e){ showToast('失敗：'+e.message,'error'); }
 };
 window.rsRegen=async function(rid){
-  if(!confirm('重新產生這筆回覆的修改碼？舊的修改碼會失效。'))return;
+  if(!confirm('重新產生這筆的修改碼？舊的修改碼會失效。'))return;
   try{ const r=(await callFn('simpleForm')({action:'regenCode',eventId:RS.id,rid})).data; prompt('新的修改碼（只顯示這一次），請告訴填表人：',r.code); }
   catch(e){ showToast('失敗：'+e.message,'error'); }
 };
@@ -1960,7 +1963,7 @@ window.rsPromoteAll=async function(){
   catch(e){ showToast('失敗：'+e.message,'error'); }
 };
 window.rsRecount=async function(){
-  if(!confirm('從全部回覆重新計算名額、不能重複的標記與名單號碼？\n平常不需要；名額數字看起來不對時再用。'))return;
+  if(!confirm('從全部資料重新計算名額、不能重複的標記與名單號碼？\n平常不需要；名額數字看起來不對時再用。'))return;
   try{ const r=(await callFn('simpleForm')({action:'recount',eventId:RS.id})).data; showToast('已重新計算：正取 '+r.active+'，候補 '+r.waiting); await loadResponses(); }
   catch(e){ showToast('失敗：'+e.message,'error'); }
 };
@@ -1969,7 +1972,7 @@ window.rsExport=function(){
   const head=['編號','狀態','送出時間','最後修改'].concat(data.map(f=>f.label));
   const lines=[head.map(csvCell).join(',')].concat(RS.rows.map(r=>[r._no,RS_STATUS[r.status]||r.status,fmtDT(r.createdAt),fmtDT(r.updatedAt)]
     .concat(data.map(f=>cfDisplayValue(f,(r.data||{})[f.id]))).map(csvCell).join(',')));
-  downloadCSV(lines.join('\n'),(RS.ev.name||'回覆')+'_回覆_'+fmtFileDateTime()+'.csv');
+  downloadCSV(lines.join('\n'),(RS.ev.name||'報名')+'_報名資料_'+fmtFileDateTime()+'.csv');
 };
 
 // 組別管理
@@ -2679,6 +2682,17 @@ let curCFEvId='';
 let curCFType='runner'; // 'runner' or 'staff'
 let curCFGroups=[]; // 目前活動的組別清單 {id,name}，只有 runner 表單才用得到；「適用組別」一律用 id 關聯，name 只做顯示
 let curCFSimple=false; // 正在編輯的是簡易表單的欄位（沒有組別、性別、年齡；下拉／複選可以設選項名額）
+let cfSimpleCfg={};    // 簡易表單的 simple 設定（欄位編輯器讀寫其中的 unique、public.listFields）
+const CF_UNIQUE_TYPES=['text','number','date','time','select'];
+function cfSimpleFlagsShow(t){
+  document.getElementById('cfSimpleFlagsRow').style.display=curCFSimple&&t!=='section'?'':'none';
+  document.getElementById('cfUniqueWrap').style.display=CF_UNIQUE_TYPES.includes(t)?'flex':'none';
+}
+// 兩個欄位都設不能重複時：組合或各自
+window.setCfUniqMode=async function(mode){
+  try{ await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{'simple.unique.mode':mode==='each'?'each':'combo',updatedAt:serverTimestamp()}); showToast('已儲存'); loadCustomFields(); }
+  catch(e){ showToast('儲存失敗：'+e.message,'error'); }
+};
 window.manageCustomFields=async function(eid,ename,type){
   curCFEvId=eid; curCFType=type||'runner';
   document.getElementById('cfEventName').textContent=ename+(type==='staff'?' — 工作人員表單':' — 參加者表單');
@@ -2721,7 +2735,7 @@ window.manageCustomFields=async function(eid,ename,type){
   curCFSimple=curCFType==='runner'&&evDocForBanner.data()?.type==='simple';
   if(curCFSimple){
     document.getElementById('cfEventName').textContent=ename+' — 表單欄位';
-    document.getElementById('cfHint').textContent='簡易表單只有這裡的欄位（沒有姓名、生日等基本資料）。下拉、複選可以設定選項名額；「不能重複」「總名額」「公開名單」在活動的「編輯 → 表單設定」。';
+    document.getElementById('cfHint').textContent='簡易表單只有這裡的欄位（沒有姓名、生日等基本資料）。下拉、複選可以設定選項名額；編輯欄位時也可以設定「不能重複」「公開在名單上」。總名額、候補、要不要公開名單在活動的「編輯 → 表單設定」。';
     document.getElementById('cfGroupsRow').style.display='none';
     curCFGroups=[];
   }
@@ -2780,6 +2794,14 @@ async function loadCustomFields(){
   const evDoc=await getDoc(doc(db,'systems',SYS,'events',curCFEvId));
   const fieldKey=curCFType==='staff'?'staffCustomFields':'customFields';
   const fields=evDoc.data()?.[fieldKey]||[];
+  cfSimpleCfg=evDoc.data()?.simple||{};
+  const uq=((cfSimpleCfg.unique||{}).fields||[]).filter(id=>fields.some(f=>f.id===id));
+  const pubF=((cfSimpleCfg.public||{}).listFields||[]);
+  const mb=document.getElementById('cfUniqModeBox');
+  if(curCFSimple&&uq.length>1){
+    const nm=uq.map(id=>'「'+esc(fields.find(f=>f.id===id).label)+'」').join('、'), m=(cfSimpleCfg.unique||{}).mode==='each'?'each':'combo';
+    mb.style.display=''; mb.innerHTML='不能重複的欄位有 '+nm+'：<select class="input" style="width:auto;display:inline-block;padding:6px 10px" onchange="setCfUniqMode(this.value)"><option value="combo"'+(m==='combo'?' selected':'')+'>兩個的組合不能重複（例如姓名＋手機）</option><option value="each"'+(m==='each'?' selected':'')+'>兩個各自都不能重複</option></select>';
+  } else { mb.style.display='none'; mb.innerHTML=''; }
   const list=document.getElementById('cfList');
   if(!fields.length){list.innerHTML='<div style="color:var(--muted);font-size:.85rem;padding:12px 0">尚無自訂欄位</div>';return;}
   list.innerHTML=fields.map((f,i)=>{
@@ -2789,6 +2811,8 @@ async function loadCustomFields(){
     if(f.type==='multi')detail+='　'+esc(multiRangeText(f));
     if(cfRuleHint(f))detail+='　限制：'+esc(cfRuleHint(f))+(f.rules&&f.rules.message?'（訊息：'+esc(f.rules.message)+'）':'');
     if(f.optQuota&&Object.keys(f.optQuota).length)detail+='　選項名額：'+esc(Object.entries(f.optQuota).map(([o,n])=>o+' '+n).join('、'))+(f.optQuotaBy&&f.optQuotaBy!=='count'?'（以「'+esc((fields.find(x=>x.id===f.optQuotaBy)||{}).label||'?')+'」加總）':'');
+    if(curCFSimple&&uq.includes(f.id))detail+='　<span style="color:var(--accent)">不能重複</span>';
+    if(curCFSimple&&pubF.includes(f.id))detail+='　<span style="color:var(--accent)">公開在名單上</span>';
     if(curCFType==='runner'&&!curCFSimple)detail+='　適用組別：'+((f.groups&&f.groups.length)?esc(f.groups.map(resolveCFGroupLabel).join('、')):'全部組別');
     if(f.cond&&f.cond.src)detail+='<br><span style="color:var(--accent)">顯示條件：'+esc(cfCondText(f.cond,fields))+'</span>';
     if(f.description)detail+='<br>說明：'+esc(f.description);
@@ -2838,6 +2862,7 @@ window.showAddCustomField=function(){
   document.getElementById('cfMaxSel').value='';
   document.getElementById('cfScope').value='';
   cfEditRules={}; cfEditOrigType='';
+  document.getElementById('cfUnique').checked=false; document.getElementById('cfPublic').checked=false;
   cfEditOptQuota=null; cfEditOptQuotaBy='count'; document.getElementById('cfOptQuotaOn').checked=false; document.getElementById('cfOptQuotaList').innerHTML=''; document.getElementById('cfOptQuotaBy').value='';
   onCfTypeChange();
   if(curCFType==='runner')renderCfGroupsCheckboxes([]);
@@ -2869,6 +2894,8 @@ window.editCustomField=async function(i){
   cfEditFields=fields; cfEditIndex=i;
   cfEditRules=f.rules||{}; cfEditOrigType=f.type||'text';
   cfEditOptQuota=f.optQuota||null; cfEditOptQuotaBy=f.optQuotaBy||'count';
+  document.getElementById('cfUnique').checked=((cfSimpleCfg.unique||{}).fields||[]).includes(f.id);
+  document.getElementById('cfPublic').checked=((cfSimpleCfg.public||{}).listFields||[]).includes(f.id);
   document.getElementById('cfOptQuotaOn').checked=!!f.optQuota; document.getElementById('cfOptQuotaList').innerHTML=''; document.getElementById('cfOptQuotaBy').innerHTML='';
   renderCfCondEditor(f.cond||null);
   onCfTypeChange();
@@ -2883,6 +2910,7 @@ window.onCfTypeChange=function(){
   document.getElementById('cfMultiRow').style.display=t==='multi'?'block':'none';
   renderCfRulesEditor(t, t===cfEditOrigType?cfEditRules:{});
   renderCfOptQuota();
+  cfSimpleFlagsShow(t);
   // 區塊標題：沒有選項、必填；只有名稱、說明、顯示條件、適用組別
   document.getElementById('cfRequiredRow').style.display=t==='section'?'none':'';
   document.getElementById('cfScopeRow').style.display=t==='section'?'':'none';
@@ -2981,7 +3009,20 @@ window.saveCustomField=async function(){
   } else {
     fields.push(field);
   }
-  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
+  const upd={[fieldKey]:fields,updatedAt:serverTimestamp()};
+  if(curCFSimple){
+    // 不能重複、公開在名單上：存在活動的 simple 設定（後端 simple.js 讀這裡），依欄位順序
+    const sm=evDoc.data()?.simple||{}, alive=id=>fields.some(f=>f.id===id);
+    const wantU=type!=='section'&&CF_UNIQUE_TYPES.includes(type)&&document.getElementById('cfUnique').checked;
+    const wantP=type!=='section'&&document.getElementById('cfPublic').checked;
+    if(wantP&&['phone','email','idno'].includes((field.rules||{}).format)){showToast('手機、Email、身分證格式的欄位不能公開在名單上','error');return;}
+    const order=ids=>fields.map(f=>f.id).filter(id=>ids.includes(id));
+    const u=order(((sm.unique||{}).fields||[]).filter(id=>id!==field.id&&alive(id)).concat(wantU?[field.id]:[]));
+    if(u.length>2){showToast('不能重複最多兩個欄位，目前已經設了：'+u.filter(id=>id!==field.id).map(id=>'「'+fields.find(f=>f.id===id).label+'」').join('、'),'error');return;}
+    const pl=order(((sm.public||{}).listFields||[]).filter(id=>id!==field.id&&alive(id)).concat(wantP?[field.id]:[]));
+    upd['simple.unique.fields']=u; upd['simple.public.listFields']=pl;
+  }
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),upd);
   document.getElementById('cfForm').style.display='none';
   showToast('已儲存');
   loadCustomFields();
@@ -2993,10 +3034,17 @@ window.deleteCustomField=async function(i){
   const label=fields[i]?.label||'';
   const deps=fields.filter(g=>(g.cond&&g.cond.src===fields[i].id)||g.optQuotaBy===fields[i].id).map(g=>'「'+g.label+'」');
   if(deps.length){showToast(deps.join('、')+'的顯示條件或選項名額用到「'+label+'」，請先修改它們','error');return;}
-  if(deps.length===0&&evUsesField(evDoc.data(),fields[i].id)&&!confirm('「'+label+'」用在這份簡易表單的表單設定（不能重複、名額計算或公開名單），刪除後那項設定會失效。確定要刪除？'))return;
+  const sm=evDoc.data()?.simple||{}, fid=fields[i].id;
+  if(curCFSimple&&(sm.quota||{}).by===fid&&!confirm('總名額是以「'+label+'」加總計算，刪除後會改成以筆數計。確定要刪除？'))return;
   if(!confirm('確定刪除欄位「'+label+'」？已填寫的報名資料中此欄位的值將保留但不再顯示。'))return;
   fields.splice(i,1);
-  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),{[fieldKey]:fields,updatedAt:serverTimestamp()});
+  const upd={[fieldKey]:fields,updatedAt:serverTimestamp()};
+  if(curCFSimple){
+    upd['simple.unique.fields']=((sm.unique||{}).fields||[]).filter(x=>x!==fid);
+    upd['simple.public.listFields']=((sm.public||{}).listFields||[]).filter(x=>x!==fid);
+    if((sm.quota||{}).by===fid) upd['simple.quota.by']='count';
+  }
+  await updateDoc(doc(db,'systems',SYS,'events',curCFEvId),upd);
   showToast('已刪除');
   loadCustomFields();
 }
@@ -6918,13 +6966,10 @@ th[data-sort]:hover{color:var(--accent);}
       </div>
       <div class="ev-simple" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
         <div style="font-size:.82rem;font-weight:700;color:var(--accent);margin-bottom:12px;letter-spacing:.05em">📝 2. 表單設定</div>
-        <div class="csv-hint" style="margin-bottom:12px">表單的欄位在活動列表的「表單欄位」設定。下面要選欄位的地方（不能重複、以數字加總、公開哪些欄位）列出目前的欄位；新增欄位後再回來勾選。</div>
+        <div class="csv-hint" style="margin-bottom:12px">跟個別欄位有關的設定（不能重複、公開在名單上、選項名額、驗證規則）都在活動列表的「表單欄位」裡，編輯每個欄位時設定。這裡只放整份表單的設定。</div>
         <div class="input-group"><label>修改與取消</label>
           <select id="evSmEdit" class="input"><option value="code">送出後給修改碼，填表人可以自己查詢、修改、取消（預設）</option><option value="none">不能修改、取消，只有管理員能改</option></select></div>
-        <div class="input-group"><label>不能重複的欄位（最多兩個，不勾＝不限制）</label>
-          <div id="evSmUniqBox" style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:4px 0"></div>
-          <div id="evSmUniqModeRow" style="display:none;margin-top:6px"><select id="evSmUniqMode" class="input"><option value="combo">兩個欄位的組合不能重複（例如「姓名＋手機」）</option><option value="each">兩個欄位各自都不能重複</option></select></div>
-          <div style="font-size:.72rem;color:var(--muted);margin-top:4px">比對時忽略空白、全形半形、英文大小寫。取消的回覆不占用。沒有登入，只能防止「同一個值」填兩次，擋不住換個名字再填。</div></div>
+        <div class="input-group"><label>不能重複的欄位</label><div id="evSmUniqInfo" style="font-size:.85rem"></div></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="input-group" style="margin:0"><label>總名額（留空＝不限）</label><input id="evSmQuota" type="number" min="1" class="input" placeholder="不限"></div>
           <div class="input-group" style="margin:0"><label>名額怎麼算</label><select id="evSmQuotaBy" class="input"></select></div>
@@ -6934,8 +6979,7 @@ th[data-sort]:hover{color:var(--accent);}
         <div style="font-size:.72rem;color:var(--muted);margin:-4px 0 12px">選項名額（例如雞腿便當限 20 份）在「表單欄位」的下拉、複選欄位設定。</div>
         <div class="input-group"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none"><input type="checkbox" id="evSmPubList" onchange="onEvSmPubChange()"> 公開名單（有連結的人都看得到，依送出順序編號）</label>
           <div id="evSmPubListRow" style="display:none;margin:6px 0 0 22px">
-            <div style="font-size:.78rem;color:var(--muted);margin-bottom:4px">名單顯示哪些欄位（手機、Email、身分證格式的欄位不能公開）：</div>
-            <div id="evSmPubFieldsBox" style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:4px 0"></div>
+            <div style="font-size:.82rem;margin-bottom:8px">名單顯示的欄位：<span id="evSmPubInfo"></span></div>
             <label style="margin-top:6px">編號方式</label>
             <select id="evSmNumbering" class="input"><option value="compact">往前遞補：1、2、3…永遠連續，有人取消就往前補（接龍、投票、團購）</option><option value="fill">空號給下一位：號碼固定，取消留下的空號給下一位正取（分組、座位、號碼牌）</option></select>
           </div></div>
@@ -7074,22 +7118,22 @@ th[data-sort]:hover{color:var(--accent);}
 </div>
 
 <!-- 報名表單設定 Modal -->
-<!-- 簡易表單：回覆 Modal -->
+<!-- 簡易表單：報名管理 Modal -->
 <div id="responsesModal" class="modal-overlay">
   <div class="modal" style="max-width:1100px;width:96vw">
-    <div class="modal-title">回覆 — <span id="rsEventName"></span></div>
+    <div class="modal-title">報名管理 — <span id="rsEventName"></span></div>
     <div id="rsSummary" style="margin-bottom:12px"></div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
       <select id="rsStatusFilter" class="input" style="width:auto" onchange="renderResponses()"><option value="live">正取＋候補</option><option value="active">只看正取</option><option value="waitlist">只看候補</option><option value="cancelled">只看已取消</option><option value="all">全部</option></select>
       <input id="rsSearch" type="text" class="input" style="flex:1;min-width:160px" placeholder="搜尋任何欄位" oninput="renderResponses()">
-      <button class="btn btn-sm btn-primary" onclick="rsAdd()">＋ 新增回覆</button>
+      <button class="btn btn-sm btn-primary" onclick="rsAdd()">＋ 新增一筆</button>
       <button class="btn btn-sm btn-ghost" onclick="rsExport()">匯出 CSV</button>
       <button class="btn btn-sm btn-ghost" onclick="rsPromoteAll()" title="名額放大、或候補沒有自動遞補時使用">遞補候補</button>
       <button class="btn btn-sm btn-ghost" onclick="rsRecount()" title="名額數字看起來不對時使用">重新計算名額</button>
-      <button class="btn btn-sm btn-ghost" onclick="copyFormLink(RS.id)">複製填表連結</button>
+      <button class="btn btn-sm btn-ghost" onclick="copyEventLink(RS.id)">複製報名網址</button>
     </div>
     <div id="rsForm" style="display:none;margin-bottom:14px;padding:14px;border:1px solid var(--border);border-radius:10px">
-      <div class="modal-title" id="rsFormTitle" style="font-size:.95rem;margin-bottom:12px">新增回覆</div>
+      <div class="modal-title" id="rsFormTitle" style="font-size:.95rem;margin-bottom:12px">新增一筆</div>
       <div id="rsFieldsBox"></div>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem;margin-top:8px"><input type="checkbox" id="rsForce"> 不受名額限制（總名額、選項名額；例如保留名額）</label>
       <div style="font-size:.72rem;color:var(--muted);margin:4px 0 0 22px">不勾時跟填表人一樣檢查名額：新增時總名額滿了會進候補（有開候補的話）。不能重複的欄位一律檢查。</div>
@@ -7134,6 +7178,7 @@ th[data-sort]:hover{color:var(--accent);}
       <div style="font-size:.72rem;color:var(--muted);margin-top:8px">隱藏時欄位不顯示也不驗證；顯示時可選必填或選填。<span id="cfFS_group_note"><br>組別：活動沒有建立組別時一律不顯示。組別隱藏或沒選組別的報名者，不適用任何組別限制（性別、年齡、名額、邀請碼、家長陪同、組別號碼規則），只顯示「適用全部組別」的自訂欄位。</span></div>
       <button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="saveFieldSettings()">儲存標準欄位設定</button>
     </div>
+    <div id="cfUniqModeBox" style="display:none;margin-bottom:10px;font-size:.85rem"></div>
     <div id="cfList" style="margin-bottom:12px"></div>
     <button class="btn btn-primary btn-sm" onclick="showAddCustomField()">＋ 新增欄位</button>
     <div id="cfForm" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
@@ -7179,6 +7224,11 @@ th[data-sort]:hover{color:var(--accent);}
         <label>驗證規則（選填，留空＝不限）</label>
         <div id="cfRulesBox" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px"></div>
         <div style="font-size:.72rem;color:var(--muted);margin-top:4px">填表時會即時提示，送出時伺服器再檢查一次；欄位被顯示條件隱藏時不檢查。</div>
+      </div>
+      <div class="input-group" id="cfSimpleFlagsRow" style="display:none">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none" id="cfUniqueWrap"><input type="checkbox" id="cfUnique"> 不能重複（例如暱稱、手機；整份表單最多兩個欄位）</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;margin-top:6px" id="cfPublicWrap"><input type="checkbox" id="cfPublic"> 公開在名單上（活動有開「公開名單」時，有連結的人都看得到）</label>
+        <div style="font-size:.72rem;color:var(--muted);margin:4px 0 0 22px">不能重複：比對時忽略空白、全形半形、英文大小寫，取消的不占用；沒有登入，擋不住換個寫法再填。手機、Email、身分證格式的欄位不能公開。</div>
       </div>
       <div class="input-group" id="cfRequiredRow"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="cfRequired"> <span id="cfRequiredLabel">必填</span></label></div>
       <div class="input-group" id="cfScopeRow" style="display:none"><label>多人報名時，這個區塊的欄位</label>
