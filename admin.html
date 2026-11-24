@@ -1897,9 +1897,11 @@ function renderResponses(){
   const data=cfDataFields(RS.fields);
   const list=RS.rows.filter(r=>(st==='all'||(st==='live'?r.status!=='cancelled':r.status===st))
     &&(!kw||data.some(f=>normSearch(cfDisplayValue(f,(r.data||{})[f.id])).includes(kw))));
-  document.getElementById('rsHead').innerHTML='<tr><th>編號</th><th>狀態</th><th>送出時間</th>'+data.map(f=>'<th>'+esc(f.label)+'</th>').join('')+'<th>操作</th></tr>';
+  document.getElementById('rsHead').innerHTML='<tr><th style="width:32px"><input type="checkbox" id="rsSelectAll" onchange="toggleSelectAll(\'rsBody\',\'rsSelectAll\',\'rsBatchDeleteBtn\')"></th><th>編號</th><th>狀態</th><th>送出時間</th>'+data.map(f=>'<th>'+esc(f.label)+'</th>').join('')+'<th>操作</th></tr>';
   const editable=s=>s!=='cancelled';
+  const prevChecked=getCheckedIdSet('rsBody');
   document.getElementById('rsBody').innerHTML=list.length?list.map(r=>'<tr'+(r.status==='cancelled'?' style="opacity:.55"':'')+'>'
+    +'<td><input type="checkbox" class="row-cb" data-id="'+esc(r.id)+'" onchange="onRowCbChange(\'rsBatchDeleteBtn\',\'rsBody\',\'rsSelectAll\')"></td>'
     +'<td class="mono">'+esc(String(r._no))+'</td>'
     +'<td><span class="badge'+(r.status==='active'?' badge-green':r.status==='waitlist'?' badge-wait':'')+'">'+esc(RS_STATUS[r.status]||r.status)+'</span>'+(r.by==='admin'?' <span style="font-size:.7rem;color:var(--muted)">管理員新增</span>':'')+'</td>'
     +'<td style="white-space:nowrap;font-size:.78rem">'+esc(fmtDT(r.createdAt))+'</td>'
@@ -1909,7 +1911,8 @@ function renderResponses(){
       +(r.status==='waitlist'?'<button class="btn btn-sm btn-green" onclick="rsPromote(\''+r.id+'\')">轉正取</button> ':'')
       +(editable(r.status)&&RS.sm.edit!=='none'?'<button class="btn btn-sm btn-ghost" onclick="rsRegen(\''+r.id+'\')">新修改碼</button> ':'')
       +'<button class="btn btn-sm btn-danger" onclick="rsDelete(\''+r.id+'\')">刪除</button></td></tr>').join('')
-    :'<tr><td colspan="'+(data.length+4)+'" class="loading-cell">沒有符合的資料</td></tr>';
+    :'<tr><td colspan="'+(data.length+5)+'" class="loading-cell">沒有符合的資料</td></tr>';
+  restoreChecks('rsBody',prevChecked); // 篩選掉的列不保留勾選，避免刪到看不到的資料
 }
 window.renderResponses=renderResponses;
 // 新增／編輯表單（共用 cf.js 的欄位畫面與驗證）
@@ -1952,6 +1955,35 @@ window.rsDelete=async function(rid){
   if(!confirm('刪除這筆（編號 '+(r._no||'-')+'）？刪除後無法復原。'+note)) return;
   try{ await callFn('simpleForm')({action:'adminDelete',eventId:RS.id,rids:[rid]}); showToast('已刪除'); await loadResponses(); }
   catch(e){ showToast('刪除失敗：'+e.message,'error'); }
+};
+// 批次刪除勾選的回覆：刪到正取時照常遞補候補
+window.rsBatchDelete=async function(){
+  const ids=getCheckedIds('rsBody'); if(!ids.length) return;
+  const sel=RS.rows.filter(r=>ids.includes(r.id));
+  const act=sel.filter(r=>r.status==='active').length, wait=sel.filter(r=>r.status==='waitlist').length, can=sel.length-act-wait;
+  const parts=[act?'正取 '+act+' 筆':'',wait?'候補 '+wait+' 筆':'',can?'已取消 '+can+' 筆':''].filter(Boolean).join('、');
+  const left=(RS.counter.waitCount||0)-wait;
+  if(!confirm('刪除勾選的 '+sel.length+' 筆（'+parts+'）？刪除後無法復原，修改紀錄也會一起刪除。'+(act&&left>0?'\n刪掉正取後，會由候補依順序遞補。':''))) return;
+  const btn=document.getElementById('rsBatchDeleteBtn'); btn.disabled=true;
+  try{
+    for(let i=0;i<ids.length;i+=200) await callFn('simpleForm')({action:'adminDelete',eventId:RS.id,rids:ids.slice(i,i+200)});
+    showToast('已刪除 '+ids.length+' 筆');
+  }catch(e){ showToast('刪除失敗：'+e.message,'error'); }
+  finally{ btn.disabled=false; resetBatchUI('rsBody','rsSelectAll','rsBatchDeleteBtn'); await loadResponses(); }
+};
+// 清空全部回覆，重複使用同一份表單（欄位、設定、填表連結不變）
+window.rsReset=async function(){
+  const n=RS.rows.length;
+  if(!n){ showToast('目前沒有任何回覆'); return; }
+  if(confirm('清空前要先匯出 CSV 備份嗎？\n（按「確定」匯出，按「取消」略過）')) rsExport();
+  const name=RS.ev.name||'';
+  const typed=prompt('清空全部 '+n+' 筆回覆（含候補、已取消）與修改紀錄，名額、名單編號全部歸零，無法復原。\n欄位、設定與填表連結都會保留。\n只能在填表時間外清空。\n\n確定要清空，請輸入活動名稱「'+name+'」：');
+  if(typed===null) return;
+  if(typed.trim()!==name.trim()){ showToast('活動名稱不符，沒有清空','error'); return; }
+  const btn=document.getElementById('rsResetBtn'); btn.disabled=true;
+  try{ const r=(await callFn('simpleForm')({action:'adminReset',eventId:RS.id})).data; showToast('已清空 '+r.deleted+' 筆回覆，可以重新開放填表'); }
+  catch(e){ showToast('清空失敗：'+e.message,'error'); }
+  finally{ btn.disabled=false; await loadResponses(); }
 };
 window.rsPromote=async function(rid){
   if(!confirm('把這筆候補轉成正取？手動轉正取不受總名額限制，可能超收。'+((RS.sm.public||{}).numbering==='compact'?'':'')))return;
@@ -5077,6 +5109,7 @@ window.renderStaff   = function(list) { renderStaff(list); };
 const BATCH_UI = {
   entriesTableBody: ['entriesBatchDeleteBtn','entriesSelectAll','entriesBatchRejectBtn'],
   runnersTableBody: ['runnersBatchDeleteBtn','runnersSelectAll'],
+  rsBody:           ['rsBatchDeleteBtn','rsSelectAll'],
   staffTableBody:   ['staffBatchDeleteBtn','staffSelectAll','staffBatchRejectBtn'],
 };
 function getCheckedIdSet(tableId) {
@@ -7149,6 +7182,8 @@ th[data-sort]:hover{color:var(--accent);}
       <button class="btn btn-sm btn-ghost" onclick="rsPromoteAll()" title="名額放大、或候補沒有自動遞補時使用">遞補候補</button>
       <button class="btn btn-sm btn-ghost" onclick="rsRecount()" title="名額數字看起來不對時使用">重新計算名額</button>
       <button class="btn btn-sm btn-ghost" onclick="copyEventLink(RS.id)">複製報名網址</button>
+      <button class="btn btn-sm btn-danger" id="rsBatchDeleteBtn" style="display:none" onclick="rsBatchDelete()">刪除勾選</button>
+      <button class="btn btn-sm btn-danger" id="rsResetBtn" style="margin-left:auto" onclick="rsReset()" title="重複使用這份表單：清掉全部回覆，名額與編號歸零（只能在填表時間外）">清空回覆</button>
     </div>
     <div id="rsForm" style="display:none;margin-bottom:14px;padding:14px;border:1px solid var(--border);border-radius:10px">
       <div class="modal-title" id="rsFormTitle" style="font-size:.95rem;margin-bottom:12px">新增一筆</div>
