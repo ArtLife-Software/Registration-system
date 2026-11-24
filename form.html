@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>填表</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--border:#2e3349;--accent:#f97316;--accent2:#fb923c;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--text:#e8eaf0;--muted:#9aa1b5;--mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,'PingFang TC','Noto Sans TC','Microsoft JhengHei',sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;}
+.wrap{max-width:560px;margin:0 auto;padding:16px;padding-bottom:80px;}
+.header{padding:18px 0 12px;}
+.header .title{font-size:1.25rem;font-weight:900;line-height:1.4;}
+.header .sub{font-size:.8rem;color:var(--muted);margin-top:4px;}
+.banner{width:100%;border-radius:12px;margin:8px 0 4px;display:block;}
+.tabs{display:flex;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:4px;margin:12px 0 16px;gap:4px;}
+.tab{flex:1;text-align:center;padding:10px 4px;border-radius:8px;font-size:.85rem;font-weight:700;color:var(--muted);cursor:pointer;}
+.tab.active{background:var(--accent);color:#fff;}
+.page{display:none;}.page.active{display:block;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:14px;}
+.input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-family:var(--sans);font-size:1rem;outline:none;}
+.input:focus{border-color:var(--accent);}
+textarea.input{resize:vertical;}
+.input-group{margin-bottom:14px;}
+.input-group label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:5px;font-weight:600;}
+.required-star{color:var(--red);}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:13px 18px;border-radius:8px;border:none;font-family:var(--sans);font-size:.95rem;font-weight:700;cursor:pointer;}
+.btn:disabled{opacity:.5;cursor:default;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border);}
+.btn-danger{background:transparent;color:var(--red);border:1px solid var(--red);}
+.btn-sm{padding:7px 12px;font-size:.8rem;}
+.btn-full{width:100%;}
+.note{font-size:.82rem;color:var(--muted);padding:10px 12px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent);line-height:1.6;margin-bottom:14px;}
+.note.warn{border-left-color:var(--yellow);}
+.note.bad{border-left-color:var(--red);color:var(--text);}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:.75rem;font-weight:700;background:var(--surface2);color:var(--muted);border:1px solid var(--border);}
+.badge-green{color:var(--green);border-color:rgba(34,197,94,.4);}
+.badge-wait{color:var(--yellow);border-color:rgba(234,179,8,.4);}
+.code{font-family:var(--mono);font-size:2rem;font-weight:800;letter-spacing:.2em;color:var(--accent);text-align:center;padding:10px 0;}
+.big{font-size:1.5rem;font-weight:900;text-align:center;margin:6px 0;}
+.center{text-align:center;}
+.muted{color:var(--muted);font-size:.82rem;}
+.list{width:100%;border-collapse:collapse;font-size:.9rem;}
+.list td{padding:8px 6px;border-bottom:1px solid var(--border);vertical-align:top;}
+.list td.no{width:3em;color:var(--muted);font-family:var(--mono);text-align:right;padding-right:10px;}
+.bar{height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;margin:4px 0 10px;}
+.bar > div{height:100%;background:var(--accent);}
+.cf-section{margin:18px 0 12px;padding-top:12px;border-top:1px solid var(--border);}
+.cf-multi label{font-size:.95rem!important;}
+.opt-full{color:var(--muted);text-decoration:line-through;}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;font-size:.9rem;opacity:0;transition:all .25s;z-index:900;max-width:92vw;}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1;}
+.toast.success{border-left:4px solid var(--green);}.toast.error{border-left:4px solid var(--red);}
+.ts{margin:10px 0;min-height:65px;}
+.confirm-row{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.9rem;}
+.confirm-row .k{color:var(--muted);min-width:6em;flex-shrink:0;}
+.confirm-row .v{white-space:pre-wrap;word-break:break-word;}
+</style>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="title" id="evTitle">載入中...</div>
+    <div class="sub" id="evSub"></div>
+    <img id="evBanner" class="banner" style="display:none" alt="">
+    <div id="evBannerLink" class="muted" style="display:none;margin-top:4px"></div>
+  </div>
+  <div id="fatal" class="card" style="display:none"></div>
+  <div id="main" style="display:none">
+    <div class="tabs" id="tabs">
+      <div class="tab active" data-tab="fill" onclick="SF.tab('fill')">填表</div>
+      <div class="tab" data-tab="list" onclick="SF.tab('list')">名單</div>
+      <div class="tab" data-tab="manage" onclick="SF.tab('manage')">查詢／修改</div>
+    </div>
+
+    <!-- 填表 -->
+    <div class="page active" id="page-fill">
+      <div id="fillNotes"></div>
+      <div class="card" id="fillCard">
+        <div id="fillFields"></div>
+        <div class="ts" id="tsFill"></div>
+        <button class="btn btn-primary btn-full" id="fillBtn" onclick="SF.review()">下一步：確認資料</button>
+      </div>
+      <div class="card" id="confirmCard" style="display:none">
+        <div style="font-weight:800;margin-bottom:10px">請確認資料</div>
+        <div id="confirmRows"></div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn btn-ghost" style="flex:1" onclick="SF.backToForm()">返回修改</button>
+          <button class="btn btn-primary" style="flex:2" id="submitBtn" onclick="SF.submit()">確認送出</button>
+        </div>
+      </div>
+      <div class="card" id="doneCard" style="display:none"></div>
+    </div>
+
+    <!-- 名單、統計 -->
+    <div class="page" id="page-list">
+      <div id="listBox"><div class="muted center" style="padding:30px">載入中...</div></div>
+    </div>
+
+    <!-- 查詢、修改、取消 -->
+    <div class="page" id="page-manage">
+      <div class="card" id="lookupCard">
+        <div id="myCodes"></div>
+        <div class="input-group"><label>修改碼（送出後拿到的 6 碼）</label><input id="codeInput" class="input" autocomplete="off" autocapitalize="characters" maxlength="10" style="font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase" placeholder="例：K7QM3X"></div>
+        <div class="ts" id="tsManage"></div>
+        <button class="btn btn-primary btn-full" id="lookupBtn" onclick="SF.lookup()">查詢</button>
+      </div>
+      <div class="card" id="mineCard" style="display:none"></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="cf.js?v=1.8.6"></script>
+<script>
+// ════════════════════════════════════════════════════════════════
+// 簡易表單的填表頁：form.html?s=系統代碼&e=活動ID
+// 填表 → 確認 → 送出（拿到修改碼）；用修改碼查詢、修改、取消；公開名單與統計（活動有開才顯示）。
+// 欄位畫面、顯示條件、驗證都用 cf.js（跟報名頁同一套）；送出、修改、名額、候補都由 Cloud Function simpleForm 處理。
+// 這段程式不直接碰 Firebase：最下面的 module 準備好 api（讀活動、呼叫 simpleForm、Turnstile）後呼叫 SF.start(api)。
+// ════════════════════════════════════════════════════════════════
+const SF=(function(){
+  let api=null, ev=null, eid='', sys='', fields=[], sm={}, pub=null, editing=null, pending=null, listTimer=null;
+  const $=id=>document.getElementById(id);
+  const toast=(msg,type)=>{ const t=$('toast'); t.textContent=msg; t.className='toast show '+(type||'success'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),3800); };
+  const errMsg=e=>(e&&e.message||String(e)).replace(/^FirebaseError:\s*/,'');
+  const CTX={groupId:'',gender:'',age:null};
+
+  // ── 這台裝置填過的修改碼（只存在這台裝置；換裝置要自己記修改碼）──
+  const lsKey=()=>'sf:'+sys+':'+eid;
+  function myCodes(){ try{ return JSON.parse(localStorage.getItem(lsKey())||'[]').filter(x=>x&&x.code); }catch(e){ return []; } }
+  function saveCode(code,label){ try{ const a=myCodes().filter(x=>x.code!==code); a.push({code,label:label||'',at:Date.now()}); localStorage.setItem(lsKey(),JSON.stringify(a.slice(-20))); }catch(e){} }
+  function dropCode(code){ try{ localStorage.setItem(lsKey(),JSON.stringify(myCodes().filter(x=>x.code!==code))); }catch(e){} }
+
+  // 開放中？（跟後台、後端同一套：手動開關，或在填表期間內）
+  function isOpen(){
+    if(ev.registrationOpen) return true;
+    const ms=t=>t&&typeof t.toMillis==='function'?t.toMillis():null;
+    const s=ms(ev.registrationStartAt), e=ms(ev.registrationEndAt), now=Date.now();
+    if(s===null&&e===null) return false;
+    return (s===null||now>=s)&&(e===null||now<=e);
+  }
+  function periodText(){
+    const f=t=>{ if(!t||!t.toDate) return ''; const d=t.toDate(), p=n=>String(n).padStart(2,'0'); return (d.getMonth()+1)+'/'+d.getDate()+' '+p(d.getHours())+':'+p(d.getMinutes()); };
+    const s=f(ev.registrationStartAt), e=f(ev.registrationEndAt);
+    return s&&e?s+' ～ '+e:s?s+' 開始':e?'到 '+e:'';
+  }
+  const hasList=()=>!!((sm.public||{}).list||(sm.public||{}).stats);
+  const canEdit=()=>sm.edit!=='none';
+
+  // 額滿的選項：標示、不能選（自己原本選的不擋，後端也會先扣掉自己的量）
+  function markOptions(prefix, own){
+    const o=(pub&&pub.options)||{};
+    for(const f of fields){
+      const st=o[f.id]; if(!st) continue;
+      const mine=v=>own&&(Array.isArray(own[f.id])?own[f.id].includes(v):own[f.id]===v);
+      const tag=s=>s.full?'（已額滿）':(s.left<=5?'（剩 '+s.left+'）':'');
+      if(f.type==='select'){
+        const sel=$(prefix+f.id); if(!sel) continue;
+        [...sel.options].forEach(op=>{ const s=st[op.value]; if(!s) return; op.textContent=op.value+tag(s); op.disabled=s.full&&!mine(op.value); });
+      } else if(f.type==='multi'){
+        const box=$(prefix+f.id); if(!box) continue;
+        box.querySelectorAll('input[type=checkbox]:not([data-other])').forEach(cb=>{
+          const s=st[cb.value]; if(!s) return;
+          const lab=cb.parentElement; lab.lastChild.textContent=' '+cb.value+tag(s);
+          if(s.full&&!mine(cb.value)){ cb.disabled=true; lab.classList.add('opt-full'); }
+        });
+      }
+    }
+  }
+
+  // ── 填表 ──
+  function fillNotes(){
+    const n=[], q=(pub&&pub.quota)||{};
+    if(!isOpen()) n.push('<div class="note bad">目前不在填表時間'+(periodText()?'（'+periodText()+'）':'')+'。</div>');
+    else if(periodText()) n.push('<div class="note">填表時間：'+esc(periodText())+'</div>');
+    if(q.total){
+      if(q.left>0) n.push('<div class="note">名額 '+q.total+(q.by&&q.by!=='count'?'（以「'+esc((fields.find(f=>f.id===q.by)||{}).label||'')+'」計）':'')+'，還剩 '+q.left+'。</div>');
+      else if(q.waitlist) n.push('<div class="note warn">名額已滿，現在送出會列入候補'+(q.waiting?'（目前候補 '+q.waiting+' 位）':'')+'；有人取消時依順序遞補。</div>');
+      else n.push('<div class="note bad">名額已滿。</div>');
+    }
+    const mine=myCodes();
+    if(mine.length&&canEdit()) n.push('<div class="note">你在這台裝置填過 '+mine.length+' 筆。<a href="#" onclick="SF.tab(\'manage\');return false" style="color:var(--accent)">查看或修改</a></div>');
+    $('fillNotes').innerHTML=n.join('');
+    const closed=!isOpen()||(q.total&&q.left<=0&&!q.waitlist);
+    $('fillCard').style.display=closed?'none':'';
+  }
+  function renderFill(values){
+    $('fillFields').innerHTML=mfFieldsHtml(fields,'f_','r_',values||{});
+    markOptions('f_',null);
+    cfApplyVisibility(fields,'f_','r_',CTX);
+  }
+  function review(){
+    const res=cfCollect(fields,'f_',cfApplyVisibility(fields,'f_','r_',CTX),{onDate:ev.date||''});
+    if(res.error){ toast(res.error,'error'); return; }
+    if(!Object.keys(res.data).length&&!fields.some(f=>f.type!=='section')){ toast('這份表單還沒有欄位','error'); return; }
+    pending=res.data;
+    const rows=cfConfirmRows(fields,res.data).filter(([,v])=>v!==''&&v!==undefined);
+    $('confirmRows').innerHTML=(rows.length?rows:[['（沒有填任何內容）','']]).map(([k,v])=>'<div class="confirm-row"><div class="k">'+esc(k)+'</div><div class="v">'+esc(String(v))+'</div></div>').join('');
+    $('fillCard').style.display='none'; $('confirmCard').style.display='';
+    window.scrollTo(0,0);
+  }
+  function backToForm(){ $('confirmCard').style.display='none'; $('fillCard').style.display=''; }
+  async function submit(){
+    if(!pending) return;
+    if(myCodes().length&&!confirm('你在這台裝置已經填過了，確定要再送出一筆？')) return;
+    const btn=$('submitBtn'); btn.disabled=true; btn.textContent='送出中...';
+    try{
+      const token=await api.token('tsFill');
+      if(!token){ toast('請先完成人機驗證','error'); backToForm(); return; }
+      const r=await api.call({action:'submit',data:pending,turnstileToken:token});
+      if(r.code) saveCode(r.code,firstText(pending));
+      showDone(r); pending=null;
+      refreshPublic();
+    }catch(e){ toast(errMsg(e),'error'); backToForm(); await refreshPublic(); }
+    finally{ btn.disabled=false; btn.textContent='確認送出'; api.resetToken('tsFill'); }
+  }
+  function firstText(d){ const f=fields.find(x=>x.type==='text'&&d[x.id]); return f?String(d[f.id]).slice(0,20):''; }
+  function placeText(r){ return r.status==='waitlist'?'候補第 '+r.waitPos+' 位':(r.no?'第 '+r.no+' 位':'已送出'); }
+  function showDone(r){
+    $('confirmCard').style.display='none'; $('fillCard').style.display='none';
+    const c=$('doneCard'); c.style.display='';
+    c.innerHTML='<div class="center" style="font-size:2rem">'+(r.status==='waitlist'?'⏳':'✅')+'</div>'
+      +'<div class="big">'+esc(placeText(r))+'</div>'
+      +(r.status==='waitlist'?'<div class="note warn">名額已滿，你在候補名單。有人取消時會依順序遞補，可以用修改碼查詢是否已遞補。</div>':'')
+      +(r.code?'<div class="muted center" style="margin-top:10px">修改碼（查詢、修改、取消時要用，請截圖或記下來）</div><div class="code" id="doneCode">'+esc(r.code)+'</div>'
+        +'<div class="center"><button class="btn btn-ghost btn-sm" onclick="SF.copy(\''+esc(r.code)+'\')">複製修改碼</button></div>'
+        +'<div class="muted center" style="margin-top:8px">這台裝置會記住，下次打開這個連結可以直接查看。換手機就要自己輸入修改碼。</div>'
+        :'<div class="muted center" style="margin-top:10px">這份表單送出後不能修改，有問題請聯絡主辦單位。</div>')
+      +'<div style="display:flex;gap:8px;margin-top:16px">'+(hasList()?'<button class="btn btn-ghost" style="flex:1" onclick="SF.tab(\'list\')">看名單</button>':'')
+      +'<button class="btn btn-ghost" style="flex:1" onclick="SF.again()">再填一筆</button></div>';
+    window.scrollTo(0,0);
+  }
+  function again(){ $('doneCard').style.display='none'; renderFill(); fillNotes(); }
+  async function copy(t){ try{ await navigator.clipboard.writeText(t); toast('已複製'); }catch(e){ prompt('請手動複製：',t); } }
+
+  // ── 公開資料（剩餘名額、額滿選項；有開才有名單與統計）──
+  let pubSeq=0;
+  async function refreshPublic(){
+    const my=++pubSeq; // 同時有好幾個請求時，只用最後一個的結果（舊的晚回來不能蓋掉新的）
+    let r=null;
+    try{
+      const code=(myCodes().slice(-1)[0]||{}).code;
+      r=await api.call({action:'public',code:(sm.public||{}).when==='afterSubmit'?code:undefined});
+    }catch(e){}
+    if(my!==pubSeq) return;
+    pub=r||pub||{quota:{},options:{}};
+    if($('fillCard').style.display!=='none'&&$('confirmCard').style.display==='none') markOptions('f_',null);
+    fillNotes();
+    if($('page-list').classList.contains('active')) renderList();
+  }
+  function renderList(){
+    const box=$('listBox'), p=pub||{};
+    if(p.hidden){ box.innerHTML='<div class="card muted center">送出之後才看得到名單與統計。</div>'; return; }
+    const out=[];
+    const q=p.quota||{};
+    if(q.total) out.push('<div class="note">正取 '+(q.active||0)+'／'+q.total+(q.waiting?'，候補 '+q.waiting:'')+'</div>');
+    if(p.stats){
+      const s=p.stats, parts=[];
+      for(const f of fields){
+        const m=s.opts&&s.opts[f.id];
+        if(m){
+          const byQty=f.optQuotaBy&&f.optQuotaBy!=='count', max=Math.max(1,...Object.values(m).map(x=>byQty?x.q:x.n));
+          parts.push('<div style="font-weight:700;margin:6px 0 4px">'+esc(f.label)+'</div>'+Object.entries(m).map(([o,x])=>{
+            const v=byQty?x.q:x.n, cap=f.optQuota&&f.optQuota[o];
+            return '<div style="display:flex;justify-content:space-between;font-size:.88rem"><span>'+esc(o)+'</span><span>'+v+(byQty?' 份':' 票')+(cap?'／'+cap:'')+'</span></div><div class="bar"><div style="width:'+Math.round(v/max*100)+'%"></div></div>';
+          }).join(''));
+        } else if(s.sums&&f.id in s.sums){
+          parts.push('<div style="display:flex;justify-content:space-between;margin:6px 0"><span style="font-weight:700">'+esc(f.label)+(f.type==='checkbox'?'（勾選人數）':' 合計')+'</span><span>'+s.sums[f.id]+'</span></div>');
+        }
+      }
+      out.push('<div class="card"><div style="font-weight:800;margin-bottom:6px">統計（共 '+s.count+' 筆）</div>'+(parts.join('')||'<div class="muted">沒有可以統計的欄位</div>')+'</div>');
+    }
+    if(p.list){
+      const lf=(p.listFields||[]).map(id=>fields.find(f=>f.id===id)).filter(Boolean);
+      const cell=r=>lf.map(f=>cfDisplayValue(f,r.fields[f.id])).filter(x=>x!=='').map(esc).join('　');
+      out.push('<div class="card"><div style="font-weight:800;margin-bottom:6px">名單（'+p.list.length+'）</div>'
+        +(p.list.length?'<table class="list">'+p.list.map(r=>'<tr><td class="no">'+(r.no?r.no+'.':'')+'</td><td>'+cell(r)+'</td></tr>').join('')+'</table>':'<div class="muted">還沒有人填</div>')
+        +((p.waitlist||[]).length?'<div style="font-weight:800;margin:14px 0 6px">候補（'+p.waitlist.length+'）</div><table class="list">'+p.waitlist.map((r,i)=>'<tr><td class="no">'+(i+1)+'.</td><td>'+cell(r)+'</td></tr>').join('')+'</table>':'')
+        +'</div>');
+    }
+    box.innerHTML=out.join('')||'<div class="card muted center">沒有公開的名單或統計。</div>';
+  }
+
+  // ── 查詢、修改、取消 ──
+  function renderMyCodes(){
+    const a=myCodes().slice().reverse();
+    $('myCodes').innerHTML=a.length?'<div class="muted" style="margin-bottom:6px">這台裝置填過的：</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">'
+      +a.map(x=>'<button class="btn btn-ghost btn-sm" onclick="SF.useCode(\''+esc(x.code)+'\')">'+esc(x.code)+(x.label?'　'+esc(x.label):'')+'</button>').join('')+'</div>':'';
+  }
+  function useCode(c){ $('codeInput').value=c; lookup(); }
+  async function lookup(){
+    const code=$('codeInput').value.trim().toUpperCase().replace(/[\s-]/g,'');
+    if(code.length!==6){ toast('修改碼是 6 碼','error'); return; }
+    const btn=$('lookupBtn'); btn.disabled=true; btn.textContent='查詢中...';
+    try{
+      const token=await api.token('tsManage');
+      if(!token){ toast('請先完成人機驗證','error'); return; }
+      const r=await api.call({action:'get',code,turnstileToken:token});
+      editing={code,r}; saveCode(code,firstText(r.data||{}));
+      showMine();
+    }catch(e){ toast(errMsg(e),'error'); }
+    finally{ btn.disabled=false; btn.textContent='查詢'; api.resetToken('tsManage'); }
+  }
+  function showMine(){
+    const {code,r}=editing, c=$('mineCard'); c.style.display='';
+    const st=r.status==='active'?'<span class="badge badge-green">正取</span>':r.status==='waitlist'?'<span class="badge badge-wait">候補</span>':'<span class="badge">已取消</span>';
+    const head='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div>'+st+' <strong>'+esc(r.status==='cancelled'?'':placeText(r))+'</strong></div><span class="muted" style="font-family:var(--mono)">'+esc(code)+'</span></div>';
+    if(r.status==='cancelled'){ c.innerHTML=head+'<div class="muted">這筆已經取消。</div>'; return; }
+    if(!isOpen()){
+      const rows=cfConfirmRows(fields,r.data||{}).filter(([,v])=>v!==''&&v!==undefined);
+      c.innerHTML=head+rows.map(([k,v])=>'<div class="confirm-row"><div class="k">'+esc(k)+'</div><div class="v">'+esc(String(v))+'</div></div>').join('')+'<div class="note" style="margin-top:12px">目前不在填表時間，只能查看，不能修改或取消。</div>';
+      return;
+    }
+    c.innerHTML=head+'<div id="editFields"></div><div class="ts" id="tsEdit"></div>'
+      +'<button class="btn btn-primary btn-full" id="saveBtn" onclick="SF.save()">儲存修改</button>'
+      +'<button class="btn btn-danger btn-full" style="margin-top:10px" id="cancelBtn" onclick="SF.cancel()">取消這筆</button>';
+    $('editFields').innerHTML=mfFieldsHtml(fields,'e_','er_',r.data||{});
+    markOptions('e_',r.data||{});
+    cfApplyVisibility(fields,'e_','er_',CTX);
+    api.renderToken('tsEdit');
+    c.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+  async function save(){
+    const res=cfCollect(fields,'e_',cfApplyVisibility(fields,'e_','er_',CTX),{onDate:ev.date||''});
+    if(res.error){ toast(res.error,'error'); return; }
+    const btn=$('saveBtn'); btn.disabled=true; btn.textContent='儲存中...';
+    try{
+      const token=await api.token('tsEdit');
+      if(!token){ toast('請先完成人機驗證','error'); return; }
+      const r=await api.call({action:'save',code:editing.code,data:res.data,turnstileToken:token});
+      editing.r=r; toast('已儲存'); showMine(); refreshPublic();
+    }catch(e){ toast(errMsg(e),'error'); }
+    finally{ if($('saveBtn')){ $('saveBtn').disabled=false; $('saveBtn').textContent='儲存修改'; } api.resetToken('tsEdit'); }
+  }
+  async function cancel(){
+    const wait=editing.r.status==='waitlist';
+    if(!confirm('確定取消這筆'+(wait?'候補':'')+'？取消後不能復原，要的話得重新填一筆'+(wait?'（會排到候補最後）':'')+'。')) return;
+    const btn=$('cancelBtn'); btn.disabled=true;
+    try{
+      const token=await api.token('tsEdit');
+      if(!token){ toast('請先完成人機驗證','error'); btn.disabled=false; return; }
+      await api.call({action:'cancel',code:editing.code,turnstileToken:token});
+      dropCode(editing.code); editing.r={...editing.r,status:'cancelled'}; toast('已取消'); showMine(); renderMyCodes(); refreshPublic();
+    }catch(e){ toast(errMsg(e),'error'); btn.disabled=false; api.resetToken('tsEdit'); }
+  }
+
+  // ── 分頁 ──
+  function tab(name){
+    document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+    document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+name));
+    clearInterval(listTimer);
+    if(name==='list'){ renderList(); refreshPublic(); listTimer=setInterval(()=>{ if(!document.hidden) refreshPublic(); },30000); }
+    if(name==='manage'){ renderMyCodes(); api.renderToken('tsManage'); }
+  }
+
+  function fatal(msg){ $('evTitle').textContent='無法開啟表單'; $('fatal').style.display=''; $('fatal').innerHTML='<div class="muted">'+esc(msg)+'</div>'; }
+
+  async function start(a){
+    api=a; sys=a.sys; eid=a.eid;
+    if(!sys||!eid){ fatal('網址不完整，請確認連結是否正確（需要 ?s=系統代碼&e=活動代碼）。'); return; }
+    try{ ev=await api.getEvent(); }catch(e){ fatal('讀取失敗：'+errMsg(e)); return; }
+    if(!ev){ fatal('找不到這份表單，可能已經被刪除，請跟主辦單位確認連結。'); return; }
+    if(ev.type!=='simple'){ fatal('這個連結不是簡易表單。報名請使用主辦單位提供的報名網址。'); return; }
+    fields=Array.isArray(ev.customFields)?ev.customFields:[]; sm=ev.simple||{};
+    document.title=ev.name||'填表';
+    $('evTitle').textContent=ev.name||'';
+    $('evSub').textContent=[ev.date,ev.organizer].filter(Boolean).join('　');
+    if(ev.bannerUrl){ $('evBanner').src=ev.bannerUrl; $('evBanner').style.display='block'; }
+    if(ev.bannerLinkUrl&&/^https?:\/\//.test(ev.bannerLinkUrl)){ $('evBannerLink').innerHTML='<a href="'+esc(ev.bannerLinkUrl)+'" target="_blank" rel="noopener" style="color:var(--accent)">'+esc(ev.bannerLinkText||ev.bannerLinkUrl)+'</a>'; $('evBannerLink').style.display='block'; }
+    document.querySelector('.tab[data-tab=list]').style.display=hasList()?'':'none';
+    document.querySelector('.tab[data-tab=manage]').style.display=canEdit()?'':'none';
+    if(!hasList()&&!canEdit()) $('tabs').style.display='none';
+    $('main').style.display='';
+    pub={quota:{},options:{}};
+    renderFill(); fillNotes();
+    api.renderToken('tsFill');
+    await refreshPublic();
+    ['input','change'].forEach(t=>document.addEventListener(t,e=>{
+      const x=e.target; if(!x||!x.closest) return;
+      if(x.closest('#fillFields')) cfApplyVisibility(fields,'f_','r_',CTX);
+      if(x.closest('#editFields')) cfApplyVisibility(fields,'e_','er_',CTX);
+    },true));
+  }
+  return {start,tab,review,backToForm,submit,again,copy,lookup,useCode,save,cancel};
+})();
+window.SF=SF;
+</script>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check.js";
+import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyB7a1puWKl5WYC19PUnh-Di7ra70e862I8",
+  authDomain: "registration-system-6e296.firebaseapp.com",
+  projectId: "registration-system-6e296",
+  storageBucket: "registration-system-6e296.firebasestorage.app",
+  messagingSenderId: "561912063653",
+  appId: "1:561912063653:web:03fefeb99aa16885818f4c"
+};
+const app = initializeApp(firebaseConfig);
+initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider('RECAPTCHA_ENTERPRISE_SITE_KEY_PLACEHOLDER'), isTokenAutoRefreshEnabled: true });
+const db = getFirestore(app);
+const auth = getAuth(app);
+const functions = getFunctions(app, 'asia-east1');
+const P = new URLSearchParams(location.search);
+const SYS = (P.get('s') || '').trim().toLowerCase();
+const EID = (P.get('e') || '').trim();
+const SITE_KEY = '0x4AAAAAAGF_-tn4QuUo4Giu';
+
+// 匿名登入：等 Firebase 確定目前有沒有人登入再補（避免蓋掉同瀏覽器的管理員登入，跟 member.html 一樣）
+const authReady = new Promise((resolve, reject) => {
+  const unsub = onAuthStateChanged(auth, async (user) => {
+    unsub();
+    if (user) return resolve();
+    try { await signInAnonymously(auth); resolve(); } catch (e) { reject(e); }
+  });
+});
+
+// Turnstile：每個容器各自一個 widget；token 只能用一次，用完 reset
+const TS = {};
+function renderToken(id) {
+  const el = document.getElementById(id); if (!el) return;
+  if (TS[id] && TS[id].el === el) return;
+  TS[id] = { el, token: '', wid: null };
+  const go = () => {
+    if (!document.getElementById(id)) return;
+    if (typeof turnstile === 'undefined') { setTimeout(go, 200); return; }
+    el.innerHTML = '';
+    TS[id].wid = turnstile.render('#' + id, { sitekey: SITE_KEY, callback: (t) => { TS[id].token = t; }, 'expired-callback': () => { TS[id].token = ''; } });
+  };
+  go();
+}
+function token(id, timeoutMs = 10000) {
+  renderToken(id);
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    (function check() {
+      const s = TS[id];
+      if (s && s.token) { const t = s.token; s.token = ''; return resolve(t); }
+      if (Date.now() - t0 > timeoutMs) return resolve('');
+      setTimeout(check, 100);
+    })();
+  });
+}
+function resetToken(id) {
+  const s = TS[id]; if (!s) return;
+  s.token = '';
+  if (typeof turnstile !== 'undefined' && s.wid !== null) try { turnstile.reset(s.wid); } catch (e) {}
+}
+const fn = httpsCallable(functions, 'simpleForm');
+
+window.SF.start({
+  sys: /^[a-z0-9][a-z0-9-]{1,29}$/.test(SYS) ? SYS : '', eid: EID.slice(0, 100),
+  getEvent: async () => { await authReady; const s = await getDoc(doc(db, 'systems', SYS, 'events', EID)); return s.exists() ? s.data() : null; },
+  call: async (data) => { await authReady; return (await fn({ ...data, systemId: SYS, eventId: EID })).data; },
+  token, resetToken, renderToken,
+});
+</script>
+</body>
+</html>
