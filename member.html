@@ -183,7 +183,9 @@ function loadSeriesMap(){
   }
   return seriesMapP;
 }
+// 簡易表單（type:'simple'）有自己的填表頁 form.html，不出現在這裡的活動選單
 async function filterBySeries(list){
+  list=(list||[]).filter(ev=>ev.type!=='simple');
   if(!SERIES_FILTER) return list;
   const sm=await loadSeriesMap();
   if(!sm[SERIES_FILTER]) return list;
@@ -462,6 +464,7 @@ async function initSignupPage(){
   const openEvents=[];
   for(const d of snap.docs){
     const ev={id:d.id,...d.data()};
+    if(ev.type==='simple') continue; // 簡易表單不在這裡報名
     // 取目前報名人數：用聚合計數查詢，只回傳數字、不下載整個報名集合
     const countSnap=await getCountFromServer(collection(db,'systems',SYS,'events',d.id,'runners'));
     ev._entryCount = countSnap.data().count;

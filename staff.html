@@ -135,7 +135,9 @@ function loadSeriesMap(){
   }
   return seriesMapP;
 }
+// 簡易表單（type:'simple'）有自己的填表頁 form.html，不出現在這裡的活動選單
 async function filterBySeries(list){
+  list=(list||[]).filter(ev=>ev.type!=='simple');
   if(!SERIES_FILTER) return list;
   const sm=await loadSeriesMap();
   if(!sm[SERIES_FILTER]) return list;
