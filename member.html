@@ -471,6 +471,25 @@ function buildRegInfoHtml(ev, entryCount) {
   return lines.length ? lines.map(l=>'<div style="font-size:.75rem;color:var(--muted);margin-top:3px">'+l+'</div>').join('') : '';
 }
 
+// ── 報名密碼（活動設定 queryPassword：off｜optional｜required）──
+// 報名者自己設；設了之後查詢、修改除了姓名、性別、生日還要密碼。密碼只送到伺服器存雜湊，這裡不保存。
+function pwSettingOf(ev){ return ['optional','required'].includes(ev&&ev.queryPassword)?ev.queryPassword:'off'; }
+function pwFieldsHtml(prefix, ev, note){
+  const mode=pwSettingOf(ev); if(mode==='off') return '';
+  const star=mode==='required'?' <span class="required-star">*</span>':'（選填）';
+  return '<div class="input-group"><label>報名密碼'+star+'</label><input id="'+prefix+'Pw" type="password" class="input" autocomplete="new-password" maxlength="30" placeholder="4～30 個字">'
+    +'<input id="'+prefix+'Pw2" type="password" class="input" style="margin-top:6px" autocomplete="new-password" maxlength="30" placeholder="再輸入一次">'
+    +'<div style="font-size:.75rem;color:var(--muted);margin-top:4px">'+(note||'設了密碼之後，查詢、修改報名都要輸入，知道你姓名和生日的人就查不到、改不了。<strong style="color:var(--text)">一定要記住</strong>，忘記要請主辦單位清除。可以用跟其他活動一樣的密碼。')+'</div></div>';
+}
+function readPwFields(prefix, ev){
+  const mode=pwSettingOf(ev); if(mode==='off') return {pw:''};
+  const a=(document.getElementById(prefix+'Pw')?.value||'').trim(), b=(document.getElementById(prefix+'Pw2')?.value||'').trim();
+  if(!a&&!b){ return mode==='required'?{error:'請設定報名密碼'}:{pw:''}; }
+  if([...a].length<4||[...a].length>30) return {error:'報名密碼需要 4～30 個字'};
+  if(a!==b) return {error:'兩次輸入的報名密碼不一樣'};
+  return {pw:a};
+}
+
 async function initSignupPage(){
   signupEvents=[];
   const content=document.getElementById('signupContent');
@@ -478,12 +497,17 @@ async function initSignupPage(){
   // 取得所有活動，由前端做開放判斷
   const snap=await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
   const openEvents=[];
+  // 報名人數：報名記錄只有管理員能讀，由後端一次算好回傳（只有數字）。
+  // 只問「可能開放」的活動（有手動開關或有設報名期間），沒設的本來就不開放
+  const maybe=snap.docs.map(d=>({id:d.id,...d.data()})).filter(ev=>ev.type!=='simple'&&(ev.registrationOpen||ev.registrationStartAt||ev.registrationEndAt));
+  let counts={};
+  for(let i=0;i<maybe.length;i+=50){
+    try{ Object.assign(counts,(await callFn('entryStats')({mode:'counts',eventIds:maybe.slice(i,i+50).map(e=>e.id)})).data.counts||{}); }catch(e){ console.warn('人數讀取失敗',e); }
+  }
   for(const d of snap.docs){
     const ev={id:d.id,...d.data()};
     if(ev.type==='simple'){ if(isRunnerRegOpen(ev,0)) openEvents.push(ev); continue; } // 簡易表單：名額由後端管，這裡只看開放時間
-    // 取目前報名人數：用聚合計數查詢，只回傳數字、不下載整個報名集合
-    const countSnap=await getCountFromServer(collection(db,'systems',SYS,'events',d.id,'runners'));
-    ev._entryCount = countSnap.data().count;
+    ev._entryCount = counts[d.id]||0;
     if(isRunnerRegOpen(ev, ev._entryCount)) openEvents.push(ev);
   }
   signupEvents=await filterBySeries(openEvents,{simple:true});
@@ -602,6 +626,7 @@ async function selectSignupEvent(eventId, keepWrapper){
   if(emailShow) formHtml+='<div class="input-group"><label>E-Mail'+(emailReq?' <span class="required-star">*</span>':'')+'</label><input id="suEmail" type="email" class="input" placeholder="example@email.com" onblur="setFieldError(\'suEmail\',!validateEmail(this.value.trim()))"></div>';
   if(idShow) formHtml+='<div class="input-group"><label>身分證字號（1英文+9數字）'+(idReq?' <span class="required-star">*</span>':'')+'</label><input id="suIdNumber" type="text" class="input" placeholder="A123456789" onblur="setFieldError(\'suIdNumber\',!validateId(this.value.trim()))"></div>';
   formHtml+='<div class="input-group"><label>備註</label><input id="suNote" type="text" class="input"></div>';
+  formHtml+=pwFieldsHtml('su', curSignupEvent);
   // 參加者號碼欄位：是否顯示、範圍依「目前選到的組別」而定（組別有開啟自訂號碼規則就依組別，
   // 沒開啟就依活動），所以容器永遠先建出來，內容交給 refreshSignupBibField()（在 onSignupGroupChange 呼叫）動態填。
   formHtml+='<div class="input-group" id="suBibRow" style="display:none"><label id="suBibLabel">參加者號碼（選填）</label>'
@@ -1247,6 +1272,8 @@ window.submitSignup=async function(){
   const email=(fs.email?.show!==false)?document.getElementById('suEmail')?.value.trim()||''  :'';
   const idNumber=(fs.idNumber?.show!==false)?document.getElementById('suIdNumber')?.value.trim()||'':'';
   const note=document.getElementById('suNote').value.trim();
+  const pwRes=readPwFields('su', curSignupEvent);
+  if(pwRes.error){ showToast(pwRes.error,'error'); return; }
 
   if(window._signupGroupCfg?.required&&!group){showToast('請選擇組別','error');return;}
   if(!name){showToast('請填寫姓名','error');return;}
@@ -1305,8 +1332,8 @@ window.submitSignup=async function(){
     }
     // 組別名額
     if(g&&g.groupCapacity>0){
-      const capSnap=await getCountFromServer(query(collection(db,'systems',SYS,'events',curSignupEvent.id,'runners'),where('groupId','==',group)));
-      if(capSnap.data().count>=g.groupCapacity){failGroup('此組別已額滿（'+g.groupCapacity+'人）');return;}
+      const n=(await callFn('entryStats')({mode:'group',eventId:curSignupEvent.id,groupId:group}).catch(()=>({data:{count:0}}))).data.count;
+      if(n>=g.groupCapacity){failGroup('此組別已額滿（'+g.groupCapacity+'人）');return;}
     }
   }
 
@@ -1353,13 +1380,14 @@ window.submitSignup=async function(){
     // ══════════════════════════════════════════════════════════
     // 送出前確認資料
     btn.textContent='送出報名'; btn.disabled=false;
-    const okGo=await confirmBeforeSubmit([{rows:[['活動',curSignupEvent.name||''],['組別',g?.name||''],['姓名',name],['性別',gender],['生日',birthday],['手機',phone],['Email',email],['身分證',idNumber],[memberRule.label,memberNo],['號碼',getEffBibSettings(g).fromMember?memberNo.normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase():customBib],['備註',note]].concat(cfConfirmRows(curSignupCustomFields,customData))}]);
+    const okGo=await confirmBeforeSubmit([{rows:[['活動',curSignupEvent.name||''],['組別',g?.name||''],['姓名',name],['性別',gender],['生日',birthday],['手機',phone],['Email',email],['身分證',idNumber],[memberRule.label,memberNo],['號碼',getEffBibSettings(g).fromMember?memberNo.normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase():customBib],['備註',note],['報名密碼',pwRes.pw?'已設定（不顯示）':'']].concat(cfConfirmRows(curSignupCustomFields,customData))}]);
     if(!okGo) return;
     btn.textContent='送出中...'; btn.disabled=true;
     if(!currentTurnstileToken){showToast('請稍候，人機驗證還在進行中，請幾秒後再試一次','error');btn.textContent='送出報名';btn.disabled=false;return;}
     const runnerSignupFn=callFn('runnerSignup');
     const payload={
       eventId,groupId:group,name,gender,birthday,phone,email,idNumber,note,customData,
+      password:pwRes.pw,
       inviteCode:document.getElementById('suInviteCode')?.value.trim()||'',
       memberNo,
       customBib:customBib||'',
@@ -1389,7 +1417,7 @@ window.submitSignup=async function(){
     // 會直接落到下面的 catch 顯示錯誤訊息
     // 這次報名可能用掉一個號碼（自選或自動配號），「查看可用號碼」的快取要清掉，
     // 不然剛用掉的號碼要重整頁面才會反映
-    showSignupSuccess({uniqueId:res.uniqueId,name,gender,group:g?.name||group,bibNumber:res.bibNumber,eventName:curSignupEvent.name,eventDate:curSignupEvent.date});
+    showSignupSuccess({uniqueId:res.uniqueId,name,gender,group:g?.name||group,bibNumber:res.bibNumber,eventName:curSignupEvent.name,eventDate:curSignupEvent.date},!!pwRes.pw);
   }catch(e){
     showToast('報名失敗：'+e.message,'error');
     resetTurnstileWidget();
@@ -1474,7 +1502,8 @@ function mfFormHtml(st, data){
     +'<div class="csv-hint">填表人負責這一批報名，之後用「批次代碼＋填表人手機」查詢、修改整批資料。填表人不一定要參加。</div>'
     +'<div class="input-group"><label>姓名 <span class="required-star">*</span></label><input id="'+ns+'_sbName" type="text" class="input" value="'+esc(sb.name||'')+'"></div>'
     +'<div class="input-group"><label>手機號碼（09開頭10碼） <span class="required-star">*</span></label><input id="'+ns+'_sbPhone" type="tel" class="input" placeholder="0912345678" value="'+esc(sb.phone||'')+'" oninput="applyHalf(this)"></div>'
-    +'<div class="input-group"><label>E-Mail</label><input id="'+ns+'_sbEmail" type="email" class="input" value="'+esc(sb.email||'')+'"></div></div>';
+    +'<div class="input-group"><label>E-Mail</label><input id="'+ns+'_sbEmail" type="email" class="input" value="'+esc(sb.email||'')+'"></div>'
+    +(st.edit?'':pwFieldsHtml(ns+'_sb', st.ev, '這一批每一位都用這組密碼。之後每位用自己的姓名、性別、生日個別查詢時要輸入（用「批次代碼＋手機」整批查詢不用）。<strong style="color:var(--text)">一定要記住</strong>，忘記要請主辦單位清除。'))+'</div>';
   h+='<div id="'+ns+'_persons"></div>';
   if(!st.edit) h+='<button type="button" class="btn btn-ghost btn-full" id="'+ns+'_addBtn" style="margin-bottom:12px" onclick="mfAddPerson(\''+ns+'\')">＋ 再加一位</button>';
   const shared=mfSharedFields(st);
@@ -1655,7 +1684,9 @@ function mfRead(st){
   }
   const rs=mfCollectCf(mfSharedFields(st), ns+'S_cf_', vm.shared, {onDate:st.ev.date||''});
   if(rs.error) return {error:'共同填寫：'+rs.error};
-  return {payload:{submitter, shared:rs.data, persons}};
+  const pwRes=st.edit?{pw:''}:readPwFields(ns+'_sb', st.ev);
+  if(pwRes.error) return {error:pwRes.error};
+  return {payload:{submitter, shared:rs.data, persons, ...(pwRes.pw?{password:pwRes.pw}:{})}};
 }
 // ── 報名分頁：切換個人／多人報名 ──
 window.setSignupMode=function(mode){
@@ -1679,7 +1710,7 @@ window.setSignupMode=function(mode){
 };
 // 多人報名的確認畫面內容
 function mfConfirmSections(st,pl){
-  const out=[{title:'填表人',rows:[['姓名',pl.submitter.name],['手機',pl.submitter.phone],['Email',pl.submitter.email||'']]}];
+  const out=[{title:'填表人',rows:[['姓名',pl.submitter.name],['手機',pl.submitter.phone],['Email',pl.submitter.email||''],['報名密碼',pl.password?'已設定（整批共用，不顯示）':'']]}];
   const sh=cfConfirmRows(mfSharedFields(st),pl.shared);
   if(sh.length) out.push({title:'共同填寫',rows:sh});
   pl.persons.forEach((p,i)=>out.push({title:'第 '+(i+1)+' 位',rows:[['組別',st.groupMap[p.groupId]?.name||''],['姓名',p.name],['性別',p.gender],['生日',p.birthday],['手機',p.phone],['Email',p.email],['身分證',p.idNumber],[memberRuleR(st.ev,st.groupMap[p.groupId]).label,p.memberNo||''],['號碼',(!st.edit&&getEffBibSettings(st.groupMap[p.groupId],st.ev).fromMember)?String(p.memberNo||'').normalize('NFKC').replace(/[\s/]+/g,'').toUpperCase():(p.customBib||'')],['備註',p.note||'']].concat(cfConfirmRows(mfPersonFields(st),p.customData))}));
@@ -1866,10 +1897,11 @@ window.mfBatchAct=async function(ns,k,action){
   }catch(e){ showToast('失敗：'+e.message,'error'); }
 };
 
-function showSignupSuccess(info){
+function showSignupSuccess(info, hasPw){
   const content=document.getElementById('signupContent');
   lastSignupInfo=info;
-  content.innerHTML='<div id="signupResultCard" class="card"></div>'
+  content.innerHTML=(hasPw?'<div class="csv-hint" style="color:var(--text)">🔒 你設了報名密碼。之後查詢、修改報名，除了姓名、性別、生日還要輸入這組密碼，請記住。</div>':'')
+    +'<div id="signupResultCard" class="card"></div>'
     +'<button class="btn btn-primary" style="width:100%;margin-top:-4px" onclick="saveSignupResultPng()">📥 存成圖片（PNG）</button>';
   renderRegInfo(document.getElementById('signupResultCard'),{...info,title:'報名成功！',icon:'✅',ev:curSignupEvent});
 }
@@ -2071,6 +2103,7 @@ async function selectStatusEvent(eventId, keepWrapper){
     +'<button type="button" class="btn btn-ghost btn-sm" onclick="var _d=document.getElementById(\'statusBirthdayPicker\');_d.showPicker?_d.showPicker():_d.click()">📅</button>'
     +'<input type="date" id="statusBirthdayPicker" style="display:none" onchange="if(this.value){const[y,m,d]=this.value.split(\'-\');document.getElementById(\'statusBirthday\').value=y+\'/\'+m+\'/\'+d;this.value=\'\'}">'
     +'</div></div>'
+    +(pwSettingOf(curStatusEvent)!=='off'?'<div class="input-group"><label>報名密碼'+(pwSettingOf(curStatusEvent)==='required'?'':'（有設才要填）')+'</label><input id="statusPw" type="password" class="input" autocomplete="current-password" maxlength="30"></div>':'')
     +'<button class="btn btn-primary btn-full" onclick="doStatusQuery()">🔍 查詢報名</button>'
     +'</div>'
     +(curStatusEvent.multiSignup?.enabled===true?batchQueryCardHtml():'');
@@ -2088,6 +2121,33 @@ async function selectStatusEvent(eventId, keepWrapper){
 // 這裡暫存查詢時輸入的憑證（姓名/性別/生日）供後續動作使用。
 let statusCred=null;
 let statusCache={};
+function statusPwInput(){ return (document.getElementById('statusPw')?.value||'').trim(); }
+// 設定、修改報名密碼（查詢結果的每一筆）：要先通過姓名、性別、生日（與舊密碼）驗證
+window.togglePwForm=function(cardId){ const el=document.getElementById(cardId+'_pwForm'); if(el) el.style.display=el.style.display==='none'?'block':'none'; };
+window.savePassword=async function(cardId, entryDocId){
+  const a=(document.getElementById(cardId+'_newPw')?.value||'').trim(), b=(document.getElementById(cardId+'_newPw2')?.value||'').trim();
+  if([...a].length<4||[...a].length>30){ showToast('報名密碼需要 4～30 個字','error'); return; }
+  if(a!==b){ showToast('兩次輸入的密碼不一樣','error'); return; }
+  try{
+    await callFn('runnerAction')({eventId:curStatusEvent.id,entryDocId,action:'password',credentials:statusCred,newPassword:a});
+    statusCred={...statusCred,password:a};
+    const pw=document.getElementById('statusPw'); if(pw) pw.value=a;
+    document.getElementById(cardId+'_pwForm').style.display='none';
+    const st=document.getElementById(cardId+'_pwState'); if(st) st.textContent='🔒 已設定報名密碼';
+    showToast('已設定報名密碼，請記住');
+  }catch(e){ showToast('設定失敗：'+e.message,'error'); }
+};
+function pwManageHtml(cardId, entryDocId, hasPw){
+  if(pwSettingOf(curStatusEvent)==='off') return '';
+  return '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span id="'+cardId+'_pwState" style="font-size:.82rem;color:var(--muted)">'+(hasPw?'🔒 已設定報名密碼':'還沒有設定報名密碼')+'</span>'
+    +'<button type="button" class="btn btn-ghost btn-sm" onclick="togglePwForm(\''+cardId+'\')">'+(hasPw?'修改密碼':'設定密碼')+'</button></div>'
+    +'<div id="'+cardId+'_pwForm" style="display:none;margin-top:8px">'
+    +'<input id="'+cardId+'_newPw" type="password" class="input" autocomplete="new-password" maxlength="30" placeholder="新密碼（4～30 個字）">'
+    +'<input id="'+cardId+'_newPw2" type="password" class="input" style="margin-top:6px" autocomplete="new-password" maxlength="30" placeholder="再輸入一次">'
+    +'<div style="font-size:.75rem;color:var(--muted);margin:4px 0 8px">設定後查詢、修改都要輸入，一定要記住；忘記要請主辦單位清除。</div>'
+    +'<button type="button" class="btn btn-primary btn-sm" onclick="savePassword(\''+cardId+'\',\''+entryDocId+'\')">儲存密碼</button></div></div>';
+}
 window.doStatusQuery=async function(){
   if(!curStatusEvent){showToast('請先選擇活動','error');return;}
   const bib=document.getElementById('statusBib').value.trim();
@@ -2103,13 +2163,18 @@ window.doStatusQuery=async function(){
   const ev=curStatusEvent;
   let res;
   try{
-    res=(await callFn('runnerStatus')({eventId,bib,name,gender,birthday})).data;
+    res=(await callFn('runnerStatus')({eventId,bib,name,gender,birthday,password:statusPwInput()})).data;
   }catch(err){
     result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">查詢失敗：'+esc(err.message)+'</div></div>';
     return;
   }
-  statusCred={name,gender,birthday};
+  statusCred={name,gender,birthday,password:statusPwInput()};
   statusCache={};
+  if(res.needPassword){
+    result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">這筆報名設了密碼，請輸入報名密碼再查詢'+(document.getElementById('statusPw')?'':'（請重新整理頁面）')+'</div></div>';
+    document.getElementById('statusPw')?.focus();
+    return;
+  }
   if(res.needFullBib){
     result.innerHTML='<div class="card"><div class="loading-cell" style="color:var(--red)">找到多筆資料，請輸入完整編號（包含前後綴，例如 A001）再查詢</div></div>';
     return;
@@ -2149,6 +2214,7 @@ window.doStatusQuery=async function(){
         html+='</div>';
       }
     }
+    html+=pwManageHtml(cardId, eDoc.id, !!e.hasPassword);
     html+='</div>';
   }
   if(!found){
@@ -2506,8 +2572,8 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
       // 名額只在「真的換到不同組別」時才檢查，避免原本就在額滿組別的人被自己卡住
       const origGroupId=statusCache[entryDocId]?.entry?.groupId;
       if(groupId!==origGroupId&&g0.groupCapacity>0){
-        const capSnap=await getCountFromServer(query(collection(db,'systems',SYS,'events',eventId,'runners'),where('groupId','==',groupId)));
-        if(capSnap.data().count>=g0.groupCapacity){failGroup('此組別已額滿（'+g0.groupCapacity+'人）');return;}
+        const n=(await callFn('entryStats')({mode:'group',eventId,groupId}).catch(()=>({data:{count:0}}))).data.count;
+        if(n>=g0.groupCapacity){failGroup('此組別已額滿（'+g0.groupCapacity+'人）');return;}
       }
     }
   }
@@ -2559,7 +2625,7 @@ window.saveEditEntry=async function(eventId,entryDocId,cardId){
       res=(await callFn('runnerAction')({...callPayload,confirmIdentityChange:true})).data;
     }
     // 憑證與快取更新（姓名/性別/生日可能被改了，之後的動作要用新值驗證）
-    statusCred=res.updatedCredentials||statusCred;
+    statusCred=res.updatedCredentials?{...res.updatedCredentials,password:(statusCred||{}).password||''}:statusCred; // 改了姓名等資料：沿用密碼
     const cached=statusCache[entryDocId];
     if(cached){
       Object.assign(cached.profile,{name,gender,birthday,phone,email,idNumber,note});
@@ -3027,14 +3093,10 @@ async function buildAwardInfo(a, tpl){
       if(g.exists()) info.distanceText=groupDistText(g.data().distance,g.data().distanceUnit);
     }
     if(uses('組別報名人數')||uses('組別報到人數')){
-      const entSnap=await getDocs(query(collection(db,'systems',SYS,'events',a.eventId,'runners'),where('groupId','==',e.groupId)));
-      const uids=entSnap.docs.map(d=>d.data().uniqueId).filter(Boolean);
-      info.entrants=uids.length;
-      if(uses('組別報到人數')){
-        const ckSnap=await getDocs(collection(db,'systems',SYS,'events',a.eventId,'checkins'));
-        const ck=new Set(ckSnap.docs.map(d=>d.id));
-        info.checkins=uids.filter(u=>ck.has(u)).length;
-      }
+      // 報名記錄、報到記錄只有管理員能讀：人數由後端算好回傳
+      const st=(await callFn('entryStats')({mode:'award',eventId:a.eventId,groupId:e.groupId,checkins:uses('組別報到人數')})).data;
+      info.entrants=st.entrants;
+      if(uses('組別報到人數')) info.checkins=st.checkins;
     }
   }catch(err){ console.warn('獎狀資料讀取失敗',err); }
   return info;
