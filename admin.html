@@ -933,7 +933,8 @@ async function loadEvents() {
     btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'runner\')">參加者表單</button> ';
     btns+='<button class="btn btn-sm btn-ghost" onclick="manageCustomFields(\''+ev.id+'\',\''+escJs(ev.name)+'\',\'staff\')">工作人員表單</button> ';
     btns+='<button class="btn btn-sm btn-ghost" onclick="openCertEditor(\''+ev.id+'\')">獎狀</button> ';
-    btns+='<button class="btn btn-sm btn-ghost" onclick="copyEventLink(\''+ev.id+'\')">複製報名網址</button>';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="copyEventLink(\''+ev.id+'\')">複製報名網址</button> ';
+    btns+='<button class="btn btn-sm btn-ghost" onclick="copyEventLink(\''+ev.id+'\',\'staff.html\')">複製工作人員網址</button>';
     const pt=periodText(ev);
     return '<tr>'
       +(withPeriod?'<td style="white-space:nowrap;color:var(--muted)">'+esc(pt||'-')+'</td>':'')
@@ -986,6 +987,7 @@ async function loadEvents() {
         +'<button class="btn btn-sm btn-primary" onclick="showNextPeriod(\''+id+'\')">＋ 建立下一'+esc(periodLabelOf(b.series))+'</button> '
         +'<button class="btn btn-sm btn-ghost" onclick="showEditSeries(\''+id+'\')">編輯系列</button> '
         +'<button class="btn btn-sm btn-ghost" onclick="copySeriesLink(\''+id+'\')">複製系列報名網址</button> '
+        +'<button class="btn btn-sm btn-ghost" onclick="copySeriesLink(\''+id+'\',\'staff.html\')">複製系列工作人員網址</button> '
         +'<button class="btn btn-sm btn-ghost" title="上移" onclick="moveSeries(\''+id+'\',-1)"'+(bi===0?' disabled':'')+'>↑</button> '
         +'<button class="btn btn-sm btn-ghost" title="下移" onclick="moveSeries(\''+id+'\',1)"'+(bi===SERIES.length-1?' disabled':'')+'>↓</button>'
         +'</div>';
@@ -1069,10 +1071,10 @@ function eventOptionsHtml(events){
   ).join('');
 }
 function seriesLink(page, gid){ return sysLink(page,SYS)+'&g='+encodeURIComponent(gid); }
-window.copySeriesLink=async function(gid){
-  const url=seriesLink('member.html',gid);
-  try{ await navigator.clipboard.writeText(url); showToast('已複製這個系列的報名網址'); }
-  catch(e){ prompt('請手動複製報名網址：',url); }
+window.copySeriesLink=async function(gid,page){
+  const staff=page==='staff.html', url=seriesLink(staff?'staff.html':'member.html',gid), what=staff?'工作人員網址':'報名網址';
+  try{ await navigator.clipboard.writeText(url); showToast('已複製這個系列的'+what); }
+  catch(e){ prompt('請手動複製'+what+'：',url); }
 };
 // 系列區塊收合狀態（每個系統各自記住）
 function seriesCollapsedKey(){ return 'seriesCollapsed:'+SYS; }
@@ -1830,11 +1832,12 @@ async function saveSimpleEvent(id){
 // 報名網址統一三個層級（兩種活動都一樣）：
 //   整個系統 member.html?s=代碼、單一系列 …&g=系列ID、單一活動 …&e=活動ID
 //   簡易表單由 member.html 自動轉到填表畫面 form.html
-function eventLink(eid){ return sysLink('member.html',SYS)+'&e='+encodeURIComponent(eid); }
-window.copyEventLink=async function(eid){
-  const url=eventLink(eid);
-  try{ await navigator.clipboard.writeText(url); showToast('已複製這個活動的報名網址，可以直接貼到 LINE'); }
-  catch(e){ prompt('請手動複製報名網址：',url); }
+// 工作人員網址也是同樣三個層級（staff.html；簡易表單沒有工作人員）
+function eventLink(eid,page){ return sysLink(page||'member.html',SYS)+'&e='+encodeURIComponent(eid); }
+window.copyEventLink=async function(eid,page){
+  const staff=page==='staff.html', url=eventLink(eid,staff?'staff.html':'member.html'), what=staff?'工作人員網址':'報名網址';
+  try{ await navigator.clipboard.writeText(url); showToast('已複製這個活動的'+what+'，可以直接貼到 LINE'); }
+  catch(e){ prompt('請手動複製'+what+'：',url); }
 };
 let RS=null; // {id, ev, fields, sm, rows, counter, editing}
 const RS_STATUS={active:'正取',waitlist:'候補',cancelled:'已取消'};

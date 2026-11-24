@@ -357,7 +357,7 @@ async function initSignupPage(){
   content.innerHTML='<div class="card"><div class="loading-cell">載入中...</div></div>';
   const snap=await getDocs(query(collection(db,'systems',SYS,'events'), orderBy('createdAt','desc')));
   signupEvents=await filterBySeries(snap.docs.map(d=>({id:d.id,...d.data()})).filter(ev=>isStaffRegOpen(ev)));
-  if(!signupEvents.length){content.innerHTML='<div class="card"><div class="loading-cell">目前沒有開放工作人員報名的活動</div></div>';return;}
+  if(!signupEvents.length){content.innerHTML='<div class="card"><div class="loading-cell">'+(EVENT_FILTER?'這個活動目前沒有開放工作人員報名。<div style="margin-top:10px"><a href="staff.html?s='+encodeURIComponent(SYS)+'" style="color:var(--accent)">看其他活動</a></div>':'目前沒有開放工作人員報名的活動')+'</div></div>';return;}
   if(signupEvents.length===1){await selectSignupEvent(signupEvents[0].id);}
   else{
     let html='<div class="card"><div class="input-group"><label>選擇活動</label><select id="signupEventSelect" class="input" onchange="onSignupEventSelect()">';
